@@ -264,7 +264,7 @@ def parse_args() -> argparse.Namespace:
         "--keep-generated-variants",
         action="store_true",
         default=KEEP_GENERATED_VARIANTS,
-        help="Persist generated normal/stress variants. By default they are temporary and discarded.",
+        help="Persist generated stress variants only. Normal resized baselines are always temporary.",
     )
     parser.add_argument(
         "--run-id",
@@ -1258,7 +1258,8 @@ def prepare_variant(row: pd.Series, temp_dir: Path) -> tuple[Image.Image | str |
         else:
             save_format, extension, save_kwargs = source_save_format(source_path)
 
-        if KEEP_GENERATED_VARIANTS:
+        persist_variant = KEEP_GENERATED_VARIANTS and row["test_type"] == "stress"
+        if persist_variant:
             out_path = generated_path(
                 row,
                 stats["variant_width"],
@@ -1280,11 +1281,11 @@ def prepare_variant(row: pd.Series, temp_dir: Path) -> tuple[Image.Image | str |
             save_image = save_image.convert("RGB")
         save_image.save(out_path, format=save_format, **save_kwargs)
 
-        stats["variant_path"] = str(out_path) if KEEP_GENERATED_VARIANTS else ""
+        stats["variant_path"] = str(out_path) if persist_variant else ""
         stats["variant_file_name"] = out_path.name
         stats["variant_file_format"] = extension.lstrip(".")
         stats["file_size_mb"] = file_size_mb(out_path)
-        return str(out_path), stats, None if KEEP_GENERATED_VARIANTS else out_path
+        return str(out_path), stats, None if persist_variant else out_path
 
 
 # ============================================================
