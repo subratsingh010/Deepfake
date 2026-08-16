@@ -87,7 +87,7 @@ KEEP_GENERATED_VARIANTS = True
 STRESS_SAMPLE_COUNT = 200
 METADATA_WORKERS = 4
 
-NORMAL_TARGET_DIMENSIONS: list[str | int] = ["original"]
+NORMAL_TARGET_DIMENSIONS: list[str | int] = ["original", 1024, 720, 512, 256]
 STRESS_TARGET_DIMENSIONS: list[str | int] = ["original", 1024, 720, 512, 256]
 RESIZE_MODES = ["aspect", "square"]
 
@@ -135,6 +135,7 @@ CENTRAL_COLUMNS = [
     "normal_original_real_probability",
     "normal_same_resolution_fake_probability",
     "normal_same_resolution_real_probability",
+    "normal_same_resolution_variant_id",
     "normal_prediction",
     "normal_result",
     "score_delta_resolution",
@@ -202,8 +203,9 @@ COLUMN_DESCRIPTIONS = {
     "threshold": "Decision threshold. Score >= threshold means fake prediction.",
     "normal_original_fake_probability": "Fake score of the original-resolution normal test for the same original image.",
     "normal_original_real_probability": "1 - normal_original_fake_probability.",
-    "normal_same_resolution_fake_probability": "For normal rows, same as the tested original score. For stress rows, the original clean score used as baseline.",
+    "normal_same_resolution_fake_probability": "For normal rows, the clean score for this row. For stress rows, the matching clean normal score using the same parent_image_id, target_dimension, and resize_mode.",
     "normal_same_resolution_real_probability": "1 - normal_same_resolution_fake_probability.",
+    "normal_same_resolution_variant_id": "Variant id of the clean normal baseline row matched by parent_image_id, target_dimension, and resize_mode.",
     "stress_fake_probability": "Fake score for this stress variant. Blank for normal rows.",
     "stress_real_probability": "1 - stress_fake_probability. Blank for normal rows.",
     "normal_prediction": "Normal row prediction: real or fake.",
@@ -717,39 +719,40 @@ def build_normal_plan(images: pd.DataFrame) -> pd.DataFrame:
             continue
 
         for target_dimension in NORMAL_TARGET_DIMENSIONS:
-            resize_mode = ""
-            row = make_empty_row()
-            row.update(
-                {
-                    "variant_id": normal_variant_id(image["parent_image_id"], target_dimension, resize_mode),
-                    "parent_image_id": image["parent_image_id"],
-                    "original_image_id": image["original_image_id"],
-                    "source": image["source"],
-                    "source_subgroup": image["source_subgroup"],
-                    "test_type": "normal",
-                    "actual_label": "real",
-                    "original_path": image["original_path"],
-                    "variant_path": image["original_path"] if target_dimension == "original" else "",
-                    "original_file_name": image["original_file_name"],
-                    "variant_file_name": "",
-                    "original_file_format": image["original_file_format"],
-                    "variant_file_format": image["original_file_format"] if target_dimension == "original" else "",
-                    "original_width": image["original_width"],
-                    "original_height": image["original_height"],
-                    "original_megapixels": image["original_megapixels"],
-                    "target_dimension": target_label(target_dimension),
-                    "resize_mode": resize_mode,
-                    "source_fps": image["source_fps"],
-                    "stress_type": "",
-                    "stress_level": "",
-                    "stress_parameter": "",
-                    "model_name": MODEL_NAME,
-                    "threshold": THRESHOLD,
-                    "random_seed": RANDOM_SEED,
-                    "error": "",
-                }
-            )
-            rows.append(row)
+            resize_modes = [""] if target_dimension == "original" else RESIZE_MODES
+            for resize_mode in resize_modes:
+                row = make_empty_row()
+                row.update(
+                    {
+                        "variant_id": normal_variant_id(image["parent_image_id"], target_dimension, resize_mode),
+                        "parent_image_id": image["parent_image_id"],
+                        "original_image_id": image["original_image_id"],
+                        "source": image["source"],
+                        "source_subgroup": image["source_subgroup"],
+                        "test_type": "normal",
+                        "actual_label": "real",
+                        "original_path": image["original_path"],
+                        "variant_path": image["original_path"] if target_dimension == "original" else "",
+                        "original_file_name": image["original_file_name"],
+                        "variant_file_name": "",
+                        "original_file_format": image["original_file_format"],
+                        "variant_file_format": image["original_file_format"] if target_dimension == "original" else "",
+                        "original_width": image["original_width"],
+                        "original_height": image["original_height"],
+                        "original_megapixels": image["original_megapixels"],
+                        "target_dimension": target_label(target_dimension),
+                        "resize_mode": resize_mode,
+                        "source_fps": image["source_fps"],
+                        "stress_type": "",
+                        "stress_level": "",
+                        "stress_parameter": "",
+                        "model_name": MODEL_NAME,
+                        "threshold": THRESHOLD,
+                        "random_seed": RANDOM_SEED,
+                        "error": "",
+                    }
+                )
+                rows.append(row)
 
     return pd.DataFrame(rows, columns=CENTRAL_COLUMNS)
 
@@ -955,6 +958,7 @@ TEXT_MUTABLE_COLUMNS = [
     "brightness_bucket",
     "blur_bucket",
     "normal_prediction",
+    "normal_same_resolution_variant_id",
     "stress_prediction",
     "normal_result",
     "stress_result",
@@ -1286,6 +1290,7 @@ def update_row_with_prediction(df: pd.DataFrame, index: int, score: float, infer
     if df.at[index, "test_type"] == "normal":
         df.at[index, "normal_same_resolution_fake_probability"] = score
         df.at[index, "normal_same_resolution_real_probability"] = real_score
+        df.at[index, "normal_same_resolution_variant_id"] = df.at[index, "variant_id"]
         df.at[index, "normal_prediction"] = prediction
         df.at[index, "normal_result"] = result
         if str(df.at[index, "target_dimension"]) == "original":
@@ -1424,19 +1429,21 @@ def run_inference_for_pending(df: pd.DataFrame, classifier, test_type: str) -> p
 # ============================================================
 
 def fill_normal_reference_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
+    df = normalize_runtime_dtypes(df)
 
     normal_rows = df[
         (df["test_type"] == "normal")
         & (df["error"].fillna("") == "")
+        & (df["normal_same_resolution_fake_probability"].notna())
     ].copy()
 
     original_scores = (
         normal_rows[normal_rows["target_dimension"].astype(str) == "original"]
         .set_index("parent_image_id")
-        [["normal_same_resolution_fake_probability", "normal_same_resolution_real_probability", "normal_prediction", "normal_result"]]
+        [["variant_id", "normal_same_resolution_fake_probability", "normal_same_resolution_real_probability", "normal_prediction", "normal_result"]]
         .rename(
             columns={
+                "variant_id": "orig_variant_id",
                 "normal_same_resolution_fake_probability": "orig_fake",
                 "normal_same_resolution_real_probability": "orig_real",
                 "normal_prediction": "orig_prediction",
@@ -1445,11 +1452,20 @@ def fill_normal_reference_columns(df: pd.DataFrame) -> pd.DataFrame:
         )
     )
 
+    if not normal_rows.empty:
+        normal_rows["target_dimension"] = normal_rows["target_dimension"].astype(str)
+        normal_rows["resize_mode"] = normal_rows["resize_mode"].fillna("").astype(str)
+
+    same_resolution_lookup = normal_rows.drop_duplicates(
+        ["parent_image_id", "target_dimension", "resize_mode"],
+        keep="last",
+    )
     same_resolution_scores = (
-        normal_rows.set_index(["parent_image_id", "target_dimension", "resize_mode"])
-        [["normal_same_resolution_fake_probability", "normal_same_resolution_real_probability", "normal_prediction", "normal_result"]]
+        same_resolution_lookup.set_index(["parent_image_id", "target_dimension", "resize_mode"])
+        [["variant_id", "normal_same_resolution_fake_probability", "normal_same_resolution_real_probability", "normal_prediction", "normal_result"]]
         .rename(
             columns={
+                "variant_id": "same_variant_id",
                 "normal_same_resolution_fake_probability": "same_fake",
                 "normal_same_resolution_real_probability": "same_real",
                 "normal_prediction": "same_prediction",
@@ -1467,17 +1483,13 @@ def fill_normal_reference_columns(df: pd.DataFrame) -> pd.DataFrame:
             orig = original_scores.loc[parent_id]
             df.at[index, "normal_original_fake_probability"] = safe_float(orig["orig_fake"])
             df.at[index, "normal_original_real_probability"] = safe_float(orig["orig_real"])
-            if row["test_type"] == "stress":
-                df.at[index, "normal_same_resolution_fake_probability"] = safe_float(orig["orig_fake"])
-                df.at[index, "normal_same_resolution_real_probability"] = safe_float(orig["orig_real"])
-                stress_result = str(row.get("stress_result", ""))
-                df.at[index, "prediction_transition"] = transition(str(orig["orig_result"]), stress_result)
 
         same_key = (parent_id, target_dimension, resize_mode)
         if same_key in same_resolution_scores.index:
             same = same_resolution_scores.loc[same_key]
             df.at[index, "normal_same_resolution_fake_probability"] = safe_float(same["same_fake"])
             df.at[index, "normal_same_resolution_real_probability"] = safe_float(same["same_real"])
+            df.at[index, "normal_same_resolution_variant_id"] = str(same["same_variant_id"])
             if row["test_type"] == "stress":
                 clean_result = str(same["same_result"])
                 stress_result = str(row.get("stress_result", ""))
