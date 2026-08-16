@@ -1,8 +1,12 @@
-torch
-torchvision
-transformers>=5.4.0
-pillow
-pandas
+gdown
 numpy
 opencv-python
+pandas
+pillow
+pillow-heif
+requests
+scipy
+torch
+torchvision
 tqdm
+transformers
