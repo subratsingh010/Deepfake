@@ -84,7 +84,7 @@ BATCH_SIZE = 8
 CHECKPOINT_EVERY = 25
 RANDOM_SEED = 42
 KEEP_GENERATED_VARIANTS = True
-STRESS_SAMPLE_COUNT = 200
+STRESS_SAMPLE_COUNT = 100
 METADATA_WORKERS = 4
 
 NORMAL_TARGET_DIMENSIONS: list[str | int] = ["original", 1024, 720, 512, 256]
@@ -247,7 +247,7 @@ def parse_args() -> argparse.Namespace:
         "--data-root",
         type=Path,
         default=DATA_ROOT,
-        help="Input dataset root. Immediate subdirectories are treated as source categories by default.",
+        help="Input dataset root. Immediate subdirectories are treated as source categories. If a wrapper data/ folder is detected, it is used automatically.",
     )
     parser.add_argument(
         "--output-dir",
@@ -316,7 +316,7 @@ def configure_from_args(args: argparse.Namespace) -> None:
     global DISCOVERED_SOURCES, THRESHOLD, BATCH_SIZE, CHECKPOINT_EVERY, RANDOM_SEED
     global STRESS_SAMPLE_COUNT, KEEP_GENERATED_VARIANTS
 
-    DATA_ROOT = args.data_root.expanduser().resolve()
+    DATA_ROOT = resolve_dataset_root(args.data_root.expanduser().resolve())
     OUTPUT_DIR = (
         args.output_dir.expanduser().resolve()
         if args.output_dir is not None
@@ -338,6 +338,31 @@ def configure_from_args(args: argparse.Namespace) -> None:
     KEEP_GENERATED_VARIANTS = args.keep_generated_variants
 
     DISCOVERED_SOURCES = discover_source_dirs(DATA_ROOT)
+
+
+def has_direct_supported_images(directory: Path) -> bool:
+    return any(is_supported_image_path(path) for path in directory.iterdir() if path.is_file())
+
+
+def child_dirs_with_direct_images(data_root: Path) -> list[Path]:
+    if not data_root.exists():
+        return []
+    return [
+        child
+        for child in sorted(data_root.iterdir())
+        if child.is_dir() and has_direct_supported_images(child)
+    ]
+
+
+def resolve_dataset_root(data_root: Path) -> Path:
+    if child_dirs_with_direct_images(data_root):
+        return data_root
+
+    nested_data = data_root / "data"
+    if nested_data.is_dir() and child_dirs_with_direct_images(nested_data):
+        return nested_data
+
+    return data_root
 
 
 def discover_source_dirs(data_root: Path) -> list[str]:
