@@ -22,7 +22,6 @@ import re
 import shutil
 import tempfile
 import time
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from importlib import import_module
 from pathlib import Path
@@ -94,9 +93,9 @@ RESIZE_MODES = ["aspect", "square"]
 
 JPEG_QUALITY_LEVELS = [95, 80, 60, 40]
 
-MAIN_CSV = OUTPUT_DIR / "false_positive_complete_benchmark.csv"
-SUMMARY_TXT = OUTPUT_DIR / "benchmark_summary.txt"
-COLUMN_GUIDE_TXT = OUTPUT_DIR / "column_guide.txt"
+MAIN_CSV = OUTPUT_DIR / f"benchmark_{MODEL_SLUG}.csv"
+SUMMARY_TXT = OUTPUT_DIR / f"summary_{MODEL_SLUG}.txt"
+COLUMN_GUIDE_TXT = OUTPUT_DIR / f"columns_{MODEL_SLUG}.txt"
 
 
 CENTRAL_COLUMNS = [
@@ -270,7 +269,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--run-id",
         default=None,
-        help="Optional run id for output filenames. Default: current timestamp.",
+        help="Kept for compatibility. Output filenames are fixed and overwritten on rerun.",
     )
     return parser.parse_args()
 
@@ -324,12 +323,11 @@ def configure_from_args(args: argparse.Namespace) -> None:
         else Path.cwd() / "output"
     )
     GENERATED_VARIANT_DIR = OUTPUT_DIR / "generated_variants"
-    run_id = clean_name(args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S"))
     model_name = model_file_name()
-    MAIN_CSV = OUTPUT_DIR / f"benchmark_{model_name}_{run_id}.csv"
-    SUMMARY_TXT = OUTPUT_DIR / f"summary_{model_name}_{run_id}.txt"
-    COLUMN_GUIDE_TXT = OUTPUT_DIR / f"columns_{model_name}_{run_id}.txt"
-    FAILED_EXPORT_DIR = OUTPUT_DIR / f"failed_{model_name}_{run_id}"
+    MAIN_CSV = OUTPUT_DIR / f"benchmark_{model_name}.csv"
+    SUMMARY_TXT = OUTPUT_DIR / f"summary_{model_name}.txt"
+    COLUMN_GUIDE_TXT = OUTPUT_DIR / f"columns_{model_name}.txt"
+    FAILED_EXPORT_DIR = OUTPUT_DIR / f"failed_{model_name}"
 
     THRESHOLD = args.threshold
     BATCH_SIZE = args.batch_size
@@ -396,10 +394,18 @@ def discover_source_dirs(data_root: Path) -> list[str]:
 
 def ensure_dirs() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    for output_file in [MAIN_CSV, SUMMARY_TXT, COLUMN_GUIDE_TXT]:
+        if output_file.exists():
+            output_file.unlink()
+
+    if FAILED_EXPORT_DIR.exists():
+        shutil.rmtree(FAILED_EXPORT_DIR)
+
+    if GENERATED_VARIANT_DIR.exists():
+        shutil.rmtree(GENERATED_VARIANT_DIR)
+
     if KEEP_GENERATED_VARIANTS:
         GENERATED_VARIANT_DIR.mkdir(parents=True, exist_ok=True)
-    elif GENERATED_VARIANT_DIR.exists():
-        shutil.rmtree(GENERATED_VARIANT_DIR)
 
 
 def clean_name(value: Any) -> str:
