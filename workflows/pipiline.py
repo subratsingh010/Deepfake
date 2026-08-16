@@ -78,6 +78,7 @@ DISCOVERED_SOURCES: list[str] = []
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 MODEL_NAME = "buildborderless/CommunityForensics-DeepfakeDet-ViT"
+MODEL_SLUG = "cf_vit"
 THRESHOLD = 0.50
 
 BATCH_SIZE = 8
@@ -325,10 +326,10 @@ def configure_from_args(args: argparse.Namespace) -> None:
     GENERATED_VARIANT_DIR = OUTPUT_DIR / "generated_variants"
     run_id = clean_name(args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S"))
     model_name = model_file_name()
-    MAIN_CSV = OUTPUT_DIR / f"false_positive_complete_benchmark_{model_name}_{run_id}.csv"
-    SUMMARY_TXT = OUTPUT_DIR / f"benchmark_summary_{model_name}_{run_id}.txt"
-    COLUMN_GUIDE_TXT = OUTPUT_DIR / f"column_guide_{model_name}_{run_id}.txt"
-    FAILED_EXPORT_DIR = OUTPUT_DIR / f"failed_images_{model_name}_{run_id}"
+    MAIN_CSV = OUTPUT_DIR / f"benchmark_{model_name}_{run_id}.csv"
+    SUMMARY_TXT = OUTPUT_DIR / f"summary_{model_name}_{run_id}.txt"
+    COLUMN_GUIDE_TXT = OUTPUT_DIR / f"columns_{model_name}_{run_id}.txt"
+    FAILED_EXPORT_DIR = OUTPUT_DIR / f"failed_{model_name}_{run_id}"
 
     THRESHOLD = args.threshold
     BATCH_SIZE = args.batch_size
@@ -408,7 +409,7 @@ def clean_name(value: Any) -> str:
 
 
 def model_file_name() -> str:
-    return clean_name(MODEL_NAME.replace("/", "__"))
+    return MODEL_SLUG
 
 
 def stable_digest(text: str, length: int = 16) -> str:
