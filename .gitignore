@@ -1,0 +1,43 @@
+# Local datasets and benchmark outputs
+data/
+output/
+archive/
+.deepeval/
+workflows/ffhq_metadata/
+
+# Generated/cache files
+__pycache__/
+.pycache/
+*.py[cod]
+.DS_Store
+
+# Images and media datasets
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.heif
+*.webp
+*.bmp
+*.tif
+*.tiff
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# Benchmark/data artifacts
+*.csv
+*.tsv
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.jsonl
+
+# Model and notebook artifacts
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.ipynb_checkpoints/

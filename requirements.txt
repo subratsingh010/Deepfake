@@ -1,0 +1,8 @@
+torch
+torchvision
+transformers>=5.4.0
+pillow
+pandas
+numpy
+opencv-python
+tqdm
