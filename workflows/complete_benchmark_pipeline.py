@@ -184,6 +184,31 @@ CENTRAL_COLUMNS = [
     "error",
 ]
 
+NUMERIC_COLUMNS = [
+    "actual_binary",
+    "original_width",
+    "original_height",
+    "original_megapixels",
+    "variant_width",
+    "variant_height",
+    "variant_megapixels",
+    "file_size_mb",
+    "brightness_mean",
+    "contrast_std",
+    "blur_score",
+    "sharpness_score",
+    "source_fps",
+    "threshold",
+    "fake_probability",
+    "real_probability",
+    "prediction_binary",
+    "is_correct",
+    "inference_ms",
+    "random_seed",
+]
+
+TEXT_COLUMNS = [column for column in CENTRAL_COLUMNS if column not in NUMERIC_COLUMNS]
+
 
 COLUMN_DESCRIPTIONS = {
     "variant_id": "Stable id for one evaluated image variant.",
@@ -770,11 +795,25 @@ def build_plan(images: Any, spec: ModelSpec, threshold: float, random_seed: int)
                     }
                 )
                 rows.append(row)
-    return pd.DataFrame(rows, columns=CENTRAL_COLUMNS)
+    return normalize_runtime_dtypes(pd.DataFrame(rows, columns=CENTRAL_COLUMNS))
 
 
 def empty_row() -> dict[str, Any]:
     return {column: "" for column in CENTRAL_COLUMNS}
+
+
+def normalize_runtime_dtypes(df: Any) -> Any:
+    df = df.copy()
+    for column in CENTRAL_COLUMNS:
+        if column not in df.columns:
+            df[column] = ""
+
+    df = df[CENTRAL_COLUMNS].astype("object")
+    for column in NUMERIC_COLUMNS:
+        df[column] = pd.to_numeric(df[column], errors="coerce").astype("float64")
+    for column in TEXT_COLUMNS:
+        df[column] = df[column].fillna("").astype("object")
+    return df[CENTRAL_COLUMNS]
 
 
 def prepare_variant(row: Any, paths: RunPaths, temp_dir: Path, keep_generated: bool) -> tuple[Any, dict[str, Any], Path | None]:
@@ -906,6 +945,7 @@ def is_completed(row: Any) -> bool:
 
 def save_checkpoint(df: Any, paths: RunPaths) -> None:
     paths.output_dir.mkdir(parents=True, exist_ok=True)
+    df = normalize_runtime_dtypes(df)
     df[CENTRAL_COLUMNS].to_csv(paths.main_csv, index=False)
 
 
@@ -924,6 +964,7 @@ def export_failed(row: Any, tested_path: Path | str | None, paths: RunPaths) -> 
 
 
 def run_inference(df: Any, classifier: Any, paths: RunPaths, args: argparse.Namespace) -> Any:
+    df = normalize_runtime_dtypes(df)
     pending_indexes = [index for index, row in df.iterrows() if not is_completed(row)]
     if not pending_indexes:
         print("No pending variants.")
