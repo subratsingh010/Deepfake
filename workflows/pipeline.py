@@ -149,7 +149,6 @@ CENTRAL_COLUMNS = [
     "source_subgroup",
     "test_type",
     "actual_label",
-    "actual_binary",
     "original_path",
     "original_file_name",
     "original_file_format",
@@ -175,32 +174,23 @@ CENTRAL_COLUMNS = [
     "contrast_std",
     "blur_score",
     "blur_bucket",
-    "sharpness_score",
     "source_fps",
     "model_name",
-    "model_acronym",
     "threshold",
     "fake_probability",
-    "real_probability",
     "prediction",
-    "prediction_binary",
     "result",
-    "confusion_type",
     "is_correct",
     "clean_baseline_variant_id",
     "clean_baseline_fake_probability",
-    "clean_baseline_real_probability",
     "clean_baseline_prediction",
     "clean_baseline_confusion_type",
     "original_baseline_variant_id",
     "original_baseline_fake_probability",
-    "original_baseline_real_probability",
     "original_baseline_prediction",
     "original_baseline_confusion_type",
     "clean_fake_probability",
-    "clean_real_probability",
     "stress_fake_probability",
-    "stress_real_probability",
     "prediction_transition",
     "score_delta_vs_clean",
     "score_delta_vs_original",
@@ -210,7 +200,6 @@ CENTRAL_COLUMNS = [
 ]
 
 NUMERIC_COLUMNS = [
-    "actual_binary",
     "original_width",
     "original_height",
     "original_megapixels",
@@ -221,21 +210,14 @@ NUMERIC_COLUMNS = [
     "brightness_mean",
     "contrast_std",
     "blur_score",
-    "sharpness_score",
     "source_fps",
     "threshold",
     "fake_probability",
-    "real_probability",
-    "prediction_binary",
     "is_correct",
     "clean_baseline_fake_probability",
-    "clean_baseline_real_probability",
     "original_baseline_fake_probability",
-    "original_baseline_real_probability",
     "clean_fake_probability",
-    "clean_real_probability",
     "stress_fake_probability",
-    "stress_real_probability",
     "score_delta_vs_clean",
     "score_delta_vs_original",
     "inference_ms",
@@ -253,7 +235,6 @@ COLUMN_DESCRIPTIONS = {
     "source_subgroup": "Nested subfolder under the source folder, if present.",
     "test_type": "clean for original/resized non-stress evaluation, stress for one controlled stress factor.",
     "actual_label": "Ground-truth label: real or fake.",
-    "actual_binary": "Ground-truth binary value: 1=fake, 0=real.",
     "original_path": "Absolute source image path. The script only reads this file.",
     "original_file_name": "Source image filename.",
     "original_file_format": "Source extension without dot.",
@@ -279,32 +260,23 @@ COLUMN_DESCRIPTIONS = {
     "contrast_std": "Grayscale contrast standard deviation.",
     "blur_score": "Laplacian variance blur/sharpness score.",
     "blur_bucket": "Bucket derived from blur_score.",
-    "sharpness_score": "Same Laplacian-based sharpness proxy as blur_score.",
     "source_fps": "FPS parsed from filename if pattern like _30fps_ exists.",
     "model_name": "Hugging Face model id.",
-    "model_acronym": "Short output folder name for the model.",
     "threshold": "Decision threshold. fake_probability >= threshold predicts fake.",
     "fake_probability": "Model fake probability/score used for binary decision.",
-    "real_probability": "1 - fake_probability.",
     "prediction": "Predicted label: real or fake.",
-    "prediction_binary": "Predicted binary value: 1=fake, 0=real.",
     "result": "Binary classification outcome: TP, TN, FP, or FN.",
-    "confusion_type": "Same TP/TN/FP/FN outcome as result, kept as an explicit full-benchmark field.",
     "is_correct": "1 if prediction equals actual label, else 0.",
     "clean_baseline_variant_id": "For stress rows, the clean variant id with the same parent image, target_dimension, and resize_mode.",
     "clean_baseline_fake_probability": "Fake score of the matched same-resolution clean baseline.",
-    "clean_baseline_real_probability": "Real score of the matched same-resolution clean baseline.",
     "clean_baseline_prediction": "Prediction of the matched same-resolution clean baseline.",
     "clean_baseline_confusion_type": "TP/TN/FP/FN outcome of the matched same-resolution clean baseline.",
     "original_baseline_variant_id": "Clean original variant id for the same parent image.",
     "original_baseline_fake_probability": "Fake score of the clean original baseline for the same parent image.",
-    "original_baseline_real_probability": "Real score of the clean original baseline for the same parent image.",
     "original_baseline_prediction": "Prediction of the clean original baseline for the same parent image.",
     "original_baseline_confusion_type": "TP/TN/FP/FN outcome of the clean original baseline for the same parent image.",
     "clean_fake_probability": "Clean-row fake score. Blank for stress rows.",
-    "clean_real_probability": "Clean-row real score. Blank for stress rows.",
     "stress_fake_probability": "Stress-row fake score. Blank for clean rows.",
-    "stress_real_probability": "Stress-row real score. Blank for clean rows.",
     "prediction_transition": "Stress transition from clean baseline confusion type to stress confusion type.",
     "score_delta_vs_clean": "stress_fake_probability - clean_baseline_fake_probability.",
     "score_delta_vs_original": "stress_fake_probability - original_baseline_fake_probability.",
@@ -558,6 +530,10 @@ def prediction_from_score(fake_score: float, threshold: float) -> tuple[str, int
     return "real", 0
 
 
+def actual_binary_from_label(actual_label: str) -> int:
+    return 1 if str(actual_label).strip().lower() == "fake" else 0
+
+
 def result_from_binary(actual_binary: int, prediction_binary: int) -> str:
     if actual_binary == 1 and prediction_binary == 1:
         return "TP"
@@ -686,7 +662,6 @@ def add_file_rows(rows: list[dict[str, Any]], data_root: Path, files: list[Path]
         rel = path.relative_to(subgroup_root)
         subgroup = "" if str(rel.parent) == "." else str(rel.parent)
         image_id = image_id_for_path(path, data_root)
-        actual_binary = 1 if actual_label == "fake" else 0
         rows.append(
             {
                 "parent_image_id": f"{actual_label}_{source}_{image_id}",
@@ -694,7 +669,6 @@ def add_file_rows(rows: list[dict[str, Any]], data_root: Path, files: list[Path]
                 "source": source,
                 "source_subgroup": subgroup,
                 "actual_label": actual_label,
-                "actual_binary": actual_binary,
                 "original_path": str(path),
                 "original_file_name": path.name,
                 "original_file_format": path.suffix.lower().lstrip("."),
@@ -862,7 +836,6 @@ def image_stats(image: Any) -> dict[str, Any]:
         "contrast_std": round(contrast, 6),
         "blur_score": round(blur, 6),
         "blur_bucket": blur_bucket(blur),
-        "sharpness_score": round(blur, 6),
     }
 
 
@@ -900,7 +873,6 @@ def build_plan(images: Any, spec: ModelSpec, threshold: float, random_seed: int)
                     row[key] = value
             row["test_type"] = "clean"
             row["model_name"] = spec.model_name
-            row["model_acronym"] = spec.acronym
             row["threshold"] = threshold
             row["random_seed"] = random_seed
             rows.append(row)
@@ -925,7 +897,6 @@ def build_plan(images: Any, spec: ModelSpec, threshold: float, random_seed: int)
                         "variant_file_name": "",
                         "variant_file_format": image["original_file_format"] if target_dimension == "original" else "",
                         "model_name": spec.model_name,
-                        "model_acronym": spec.acronym,
                         "threshold": threshold,
                         "random_seed": random_seed,
                         "error": "",
@@ -957,7 +928,6 @@ def build_plan(images: Any, spec: ModelSpec, threshold: float, random_seed: int)
                             "variant_file_name": "",
                             "variant_file_format": "",
                             "model_name": spec.model_name,
-                            "model_acronym": spec.acronym,
                             "threshold": threshold,
                             "random_seed": random_seed,
                             "error": "",
@@ -1098,17 +1068,13 @@ def extract_fake_probability(output: list[dict[str, Any]]) -> float:
 
 def update_prediction_row(df: Any, index: int, fake_score: float, inference_ms: float, threshold: float) -> None:
     fake_score = float(fake_score)
-    real_score = 1.0 - fake_score
     prediction, prediction_binary = prediction_from_score(fake_score, threshold)
-    actual_binary = int(df.at[index, "actual_binary"])
+    actual_binary = actual_binary_from_label(str(df.at[index, "actual_label"]))
     result = result_from_binary(actual_binary, prediction_binary)
 
     df.at[index, "fake_probability"] = fake_score
-    df.at[index, "real_probability"] = real_score
     df.at[index, "prediction"] = prediction
-    df.at[index, "prediction_binary"] = prediction_binary
     df.at[index, "result"] = result
-    df.at[index, "confusion_type"] = result
     df.at[index, "is_correct"] = int(actual_binary == prediction_binary)
     df.at[index, "inference_ms"] = inference_ms
     df.at[index, "error"] = ""
@@ -1137,9 +1103,7 @@ def annotate_clean_and_stress_baselines(df: Any, threshold: float) -> Any:
     stress_mask = valid_mask & df["test_type"].eq("stress")
 
     df.loc[clean_mask, "clean_fake_probability"] = df.loc[clean_mask, "fake_probability"].astype(float)
-    df.loc[clean_mask, "clean_real_probability"] = df.loc[clean_mask, "real_probability"].astype(float)
     df.loc[stress_mask, "stress_fake_probability"] = df.loc[stress_mask, "fake_probability"].astype(float)
-    df.loc[stress_mask, "stress_real_probability"] = df.loc[stress_mask, "real_probability"].astype(float)
 
     clean_lookup = {
         (
@@ -1160,9 +1124,8 @@ def annotate_clean_and_stress_baselines(df: Any, threshold: float) -> Any:
         if original is not None:
             df.at[index, "original_baseline_variant_id"] = original.variant_id
             df.at[index, "original_baseline_fake_probability"] = float(original.fake_probability)
-            df.at[index, "original_baseline_real_probability"] = float(original.real_probability)
             df.at[index, "original_baseline_prediction"] = str(original.prediction)
-            df.at[index, "original_baseline_confusion_type"] = str(original.confusion_type or original.result)
+            df.at[index, "original_baseline_confusion_type"] = str(original.result)
 
     for index in df.index[stress_mask]:
         key = (
@@ -1174,10 +1137,9 @@ def annotate_clean_and_stress_baselines(df: Any, threshold: float) -> Any:
         if clean is not None:
             df.at[index, "clean_baseline_variant_id"] = clean.variant_id
             df.at[index, "clean_baseline_fake_probability"] = float(clean.fake_probability)
-            df.at[index, "clean_baseline_real_probability"] = float(clean.real_probability)
             df.at[index, "clean_baseline_prediction"] = str(clean.prediction)
-            df.at[index, "clean_baseline_confusion_type"] = str(clean.confusion_type or clean.result)
-            df.at[index, "prediction_transition"] = f"{str(clean.confusion_type or clean.result)}_to_{str(df.at[index, 'confusion_type'] or df.at[index, 'result'])}"
+            df.at[index, "clean_baseline_confusion_type"] = str(clean.result)
+            df.at[index, "prediction_transition"] = f"{str(clean.result)}_to_{str(df.at[index, 'result'])}"
             df.at[index, "score_delta_vs_clean"] = float(df.at[index, "fake_probability"]) - float(clean.fake_probability)
 
         original = original_lookup.get(str(df.at[index, "parent_image_id"]))
@@ -1324,7 +1286,7 @@ def metrics_for_group(group: Any, threshold: float) -> dict[str, Any]:
     if count == 0:
         return empty_metrics()
 
-    actual = valid["actual_binary"].astype(int)
+    actual = valid["actual_label"].map(actual_binary_from_label).astype(int)
     predicted = (valid["fake_probability"].astype(float) >= threshold).astype(int)
     scores = valid["fake_probability"].astype(float)
 
@@ -1347,7 +1309,7 @@ def metrics_for_group(group: Any, threshold: float) -> dict[str, Any]:
         clean_predicted = (stress_valid["clean_baseline_fake_probability"].astype(float) >= threshold).astype(int)
         clean_confusion = [
             result_from_binary(int(actual_value), int(predicted_value))
-            for actual_value, predicted_value in zip(stress_valid["actual_binary"].astype(int), clean_predicted)
+            for actual_value, predicted_value in zip(stress_valid["actual_label"].map(actual_binary_from_label).astype(int), clean_predicted)
         ]
         current_confusion = stress_valid["_threshold_confusion_type"].tolist()
         for before, after in zip(clean_confusion, current_confusion):
