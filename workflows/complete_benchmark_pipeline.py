@@ -266,6 +266,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Discover images and print planned variant counts, but do not load models or run inference.",
     )
+    parser.add_argument(
+        "--no-balance-labels",
+        action="store_true",
+        help="Use all discovered images instead of randomly downsampling each label to the smallest label count.",
+    )
     return parser.parse_args()
 
 
@@ -499,7 +504,7 @@ def infer_direct_file_source(path: Path, actual_label: str, fallback: str) -> st
     return "chatgpt"
 
 
-def discover_images(data_root: Path) -> Any:
+def discover_images(data_root: Path, random_seed: int, balance_labels: bool) -> Any:
     rows: list[dict[str, Any]] = []
     data_root = resolve_dataset_root(data_root)
 
@@ -516,7 +521,7 @@ def discover_images(data_root: Path) -> Any:
             if direct_files:
                 grouped_files: dict[str, list[Path]] = {}
                 for path in direct_files:
-                    source = infer_direct_file_source(path, actual_label, clean_name(label_dir.name))
+                    source = infer_direct_file_source(path, actual_label, actual_label)
                     grouped_files.setdefault(source, []).append(path)
                 for source, files in sorted(grouped_files.items()):
                     add_file_rows(rows, data_root, files, source, actual_label, label_dir)
@@ -545,15 +550,21 @@ def discover_images(data_root: Path) -> Any:
             guessed_label = folder_label(source_dir.name) or "real"
             add_source_rows(rows, data_root, source_dir, source_dir.name, guessed_label)
 
-    df = pd.DataFrame(rows)
-    if df.empty:
-        return df
+    raw_df = pd.DataFrame(rows)
+    if raw_df.empty:
+        return raw_df
+
+    print(f"Discovered originals: {len(raw_df):,}")
+    print(f"Discovered counts   : {label_count_dict(raw_df)}")
+    selected_df = balance_images_by_label(raw_df, random_seed) if balance_labels else raw_df
+    if not balance_labels:
+        print("Balanced sampling   : disabled")
 
     with ThreadPoolExecutor(max_workers=METADATA_WORKERS) as executor:
         enriched = list(
             tqdm(
-                executor.map(add_original_metadata, rows),
-                total=len(rows),
+                executor.map(add_original_metadata, selected_df.to_dict("records")),
+                total=len(selected_df),
                 desc="Original metadata",
                 unit="img",
             )
@@ -588,6 +599,38 @@ def add_file_rows(rows: list[dict[str, Any]], data_root: Path, files: list[Path]
                 "error": "",
             }
         )
+
+
+def label_count_dict(images: Any) -> dict[str, int]:
+    return {str(label): int(count) for label, count in images.groupby("actual_label").size().items()}
+
+
+def balance_images_by_label(images: Any, random_seed: int) -> Any:
+    if images.empty or "actual_label" not in images.columns:
+        return images
+
+    label_counts = images.groupby("actual_label").size()
+    if len(label_counts) < 2:
+        print("Balanced sampling   : skipped, only one label found")
+        return images
+
+    min_count = int(label_counts.min())
+    balanced_parts = []
+    for label in sorted(label_counts.index):
+        group = images[images["actual_label"] == label]
+        balanced_parts.append(
+            group.sample(n=min_count, random_state=random_seed, replace=False)
+            if len(group) > min_count
+            else group.copy()
+        )
+
+    balanced = (
+        pd.concat(balanced_parts, ignore_index=True)
+        .sample(frac=1.0, random_state=random_seed)
+        .reset_index(drop=True)
+    )
+    print(f"Balanced sampling   : {label_count_dict(images)} -> {label_count_dict(balanced)}")
+    return balanced
 
 
 def open_source_image(path: Path) -> Any:
@@ -1220,10 +1263,10 @@ def main() -> None:
     print(f"Device             : {DEVICE}")
 
     print("\n[1/3] Discovering images...")
-    images = discover_images(data_root)
+    images = discover_images(data_root, args.random_seed, balance_labels=not args.no_balance_labels)
     if images.empty:
         raise RuntimeError(f"No png/jpg/jpeg images found under {data_root}")
-    label_counts = images.groupby("actual_label").size().to_dict()
+    label_counts = label_count_dict(images)
     print(f"Total originals    : {len(images):,}")
     print(f"Label counts       : {label_counts}")
 
