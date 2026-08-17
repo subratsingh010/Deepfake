@@ -408,6 +408,15 @@ def clean_name(value: Any) -> str:
     return safe[:180]
 
 
+def test_type_dir_name(value: Any) -> str:
+    test_type = str(value).strip().lower()
+    if test_type == "clean":
+        return "normal"
+    if test_type == "stress":
+        return "stress"
+    return clean_name(test_type or "unknown")
+
+
 def stable_digest(text: str, length: int = 16) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:length]
 
@@ -819,17 +828,11 @@ def logical_variant_file_name(row: Any, width: int, height: int, extension: str)
 
 
 def generated_path(paths: RunPaths, row: Any, width: int, height: int, extension: str) -> Path:
-    return (
-        paths.generated_dir
-        / clean_name(row["test_type"])
-        / clean_name(row["actual_label"])
-        / clean_name(row["source"])
-        / clean_name(row.get("stress_type", "clean"))
-        / clean_name(row.get("stress_level", "none"))
-        / clean_name(row["target_dimension"])
-        / clean_name(row.get("resize_mode", ""))
-        / logical_variant_file_name(row, width, height, extension)
-    )
+    test_type_dir = test_type_dir_name(row["test_type"])
+    base_dir = paths.generated_dir / test_type_dir / clean_name(row["actual_label"]) / clean_name(row["source"])
+    if test_type_dir == "stress":
+        base_dir = base_dir / clean_name(row.get("stress_type", "none")) / clean_name(row.get("stress_level", "none"))
+    return base_dir / clean_name(row["target_dimension"]) / clean_name(row.get("resize_mode", "")) / logical_variant_file_name(row, width, height, extension)
 
 
 def build_plan(images: Any, spec: ModelSpec, threshold: float, random_seed: int) -> Any:
@@ -1077,7 +1080,13 @@ def export_failed(row: Any, tested_path: Path | str | None, paths: RunPaths) -> 
     if not source_path.exists():
         return
     score = float(row.get("fake_probability", 0.0))
-    out_dir = paths.failed_dir / result / clean_name(row.get("actual_label", "")) / clean_name(row.get("source", ""))
+    out_dir = (
+        paths.failed_dir
+        / test_type_dir_name(row.get("test_type", "unknown"))
+        / result
+        / clean_name(row.get("actual_label", ""))
+        / clean_name(row.get("source", ""))
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     name = f"score_{score:.4f}_{clean_name(row.get('variant_id', 'variant'))}_{clean_name(source_path.name)}"
     shutil.copy2(source_path, out_dir / name)
