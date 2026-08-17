@@ -158,6 +158,7 @@ CENTRAL_COLUMNS = [
     "original_megapixels",
     "target_dimension",
     "resize_mode",
+    "processing_variant",
     "stress_type",
     "stress_level",
     "stress_parameter",
@@ -184,7 +185,25 @@ CENTRAL_COLUMNS = [
     "prediction",
     "prediction_binary",
     "result",
+    "confusion_type",
     "is_correct",
+    "clean_baseline_variant_id",
+    "clean_baseline_fake_probability",
+    "clean_baseline_real_probability",
+    "clean_baseline_prediction",
+    "clean_baseline_confusion_type",
+    "original_baseline_variant_id",
+    "original_baseline_fake_probability",
+    "original_baseline_real_probability",
+    "original_baseline_prediction",
+    "original_baseline_confusion_type",
+    "clean_fake_probability",
+    "clean_real_probability",
+    "stress_fake_probability",
+    "stress_real_probability",
+    "prediction_transition",
+    "score_delta_vs_clean",
+    "score_delta_vs_original",
     "inference_ms",
     "random_seed",
     "error",
@@ -209,6 +228,16 @@ NUMERIC_COLUMNS = [
     "real_probability",
     "prediction_binary",
     "is_correct",
+    "clean_baseline_fake_probability",
+    "clean_baseline_real_probability",
+    "original_baseline_fake_probability",
+    "original_baseline_real_probability",
+    "clean_fake_probability",
+    "clean_real_probability",
+    "stress_fake_probability",
+    "stress_real_probability",
+    "score_delta_vs_clean",
+    "score_delta_vs_original",
     "inference_ms",
     "random_seed",
 ]
@@ -233,6 +262,7 @@ COLUMN_DESCRIPTIONS = {
     "original_megapixels": "Original source image megapixels.",
     "target_dimension": "original, 1024, 720, 512, or 256.",
     "resize_mode": "blank for original, aspect for aspect-preserving resize, square for center-crop square resize.",
+    "processing_variant": "Combined clean processing variant: original, 1024_aspect, 1024_square, 720_aspect, etc.",
     "stress_type": "Stress family for stress rows, for example blur, brightness, sharpness, contrast, or jpeg_compression. Blank for clean rows.",
     "stress_level": "Stress level for stress rows, for example low, medium, high, darker, brighter, lower, higher, q80. Blank for clean rows.",
     "stress_parameter": "Exact stress parameter used, for example radius=2, factor=1.30, or quality=80. Blank for clean rows.",
@@ -259,7 +289,25 @@ COLUMN_DESCRIPTIONS = {
     "prediction": "Predicted label: real or fake.",
     "prediction_binary": "Predicted binary value: 1=fake, 0=real.",
     "result": "Binary classification outcome: TP, TN, FP, or FN.",
+    "confusion_type": "Same TP/TN/FP/FN outcome as result, kept as an explicit full-benchmark field.",
     "is_correct": "1 if prediction equals actual label, else 0.",
+    "clean_baseline_variant_id": "For stress rows, the clean variant id with the same parent image, target_dimension, and resize_mode.",
+    "clean_baseline_fake_probability": "Fake score of the matched same-resolution clean baseline.",
+    "clean_baseline_real_probability": "Real score of the matched same-resolution clean baseline.",
+    "clean_baseline_prediction": "Prediction of the matched same-resolution clean baseline.",
+    "clean_baseline_confusion_type": "TP/TN/FP/FN outcome of the matched same-resolution clean baseline.",
+    "original_baseline_variant_id": "Clean original variant id for the same parent image.",
+    "original_baseline_fake_probability": "Fake score of the clean original baseline for the same parent image.",
+    "original_baseline_real_probability": "Real score of the clean original baseline for the same parent image.",
+    "original_baseline_prediction": "Prediction of the clean original baseline for the same parent image.",
+    "original_baseline_confusion_type": "TP/TN/FP/FN outcome of the clean original baseline for the same parent image.",
+    "clean_fake_probability": "Clean-row fake score. Blank for stress rows.",
+    "clean_real_probability": "Clean-row real score. Blank for stress rows.",
+    "stress_fake_probability": "Stress-row fake score. Blank for clean rows.",
+    "stress_real_probability": "Stress-row real score. Blank for clean rows.",
+    "prediction_transition": "Stress transition from clean baseline confusion type to stress confusion type.",
+    "score_delta_vs_clean": "stress_fake_probability - clean_baseline_fake_probability.",
+    "score_delta_vs_original": "stress_fake_probability - original_baseline_fake_probability.",
     "inference_ms": "Approximate inference milliseconds per image in the batch.",
     "random_seed": "Seed stored for reproducibility.",
     "error": "Error text if variant prep or inference failed.",
@@ -489,6 +537,12 @@ def variant_id_for(parent_id: str, target: str | int, resize_mode: str) -> str:
 
 def stress_variant_id_for(parent_id: str, target: str | int, resize_mode: str, stress_type: str, stress_level: str, stress_parameter: str) -> str:
     return "stress_" + stable_digest(f"{parent_id}|{target}|{resize_mode}|{stress_type}|{stress_level}|{stress_parameter}", 18)
+
+
+def processing_variant_for(target: str | int, resize_mode: str) -> str:
+    if str(target) == "original":
+        return "original"
+    return f"{target}_{resize_mode or 'aspect'}"
 
 
 def source_save_format(path: Path) -> tuple[str, str, dict[str, Any]]:
@@ -863,6 +917,7 @@ def build_plan(images: Any, spec: ModelSpec, threshold: float, random_seed: int)
                         "test_type": "clean",
                         "target_dimension": str(target_dimension),
                         "resize_mode": resize_mode,
+                        "processing_variant": processing_variant_for(target_dimension, resize_mode),
                         "stress_type": "",
                         "stress_level": "",
                         "stress_parameter": "",
@@ -894,6 +949,7 @@ def build_plan(images: Any, spec: ModelSpec, threshold: float, random_seed: int)
                             "test_type": "stress",
                             "target_dimension": str(target_dimension),
                             "resize_mode": resize_mode,
+                            "processing_variant": processing_variant_for(target_dimension, resize_mode),
                             "stress_type": stress_spec["stress_type"],
                             "stress_level": stress_spec["stress_level"],
                             "stress_parameter": stress_spec["stress_parameter"],
@@ -1052,6 +1108,7 @@ def update_prediction_row(df: Any, index: int, fake_score: float, inference_ms: 
     df.at[index, "prediction"] = prediction
     df.at[index, "prediction_binary"] = prediction_binary
     df.at[index, "result"] = result
+    df.at[index, "confusion_type"] = result
     df.at[index, "is_correct"] = int(actual_binary == prediction_binary)
     df.at[index, "inference_ms"] = inference_ms
     df.at[index, "error"] = ""
@@ -1070,6 +1127,64 @@ def save_checkpoint(df: Any, paths: RunPaths) -> None:
     paths.output_dir.mkdir(parents=True, exist_ok=True)
     df = normalize_runtime_dtypes(df)
     df[CENTRAL_COLUMNS].to_csv(paths.main_csv, index=False)
+
+
+def annotate_clean_and_stress_baselines(df: Any, threshold: float) -> Any:
+    df = normalize_runtime_dtypes(df)
+    valid_mask = (df["error"].fillna("") == "") & df["fake_probability"].notna()
+
+    clean_mask = valid_mask & df["test_type"].eq("clean")
+    stress_mask = valid_mask & df["test_type"].eq("stress")
+
+    df.loc[clean_mask, "clean_fake_probability"] = df.loc[clean_mask, "fake_probability"].astype(float)
+    df.loc[clean_mask, "clean_real_probability"] = df.loc[clean_mask, "real_probability"].astype(float)
+    df.loc[stress_mask, "stress_fake_probability"] = df.loc[stress_mask, "fake_probability"].astype(float)
+    df.loc[stress_mask, "stress_real_probability"] = df.loc[stress_mask, "real_probability"].astype(float)
+
+    clean_lookup = {
+        (
+            str(row.parent_image_id),
+            str(row.target_dimension),
+            str(row.resize_mode),
+        ): row
+        for row in df.loc[clean_mask].itertuples(index=False)
+    }
+    original_lookup = {
+        str(row.parent_image_id): row
+        for row in df.loc[clean_mask & df["target_dimension"].eq("original")].itertuples(index=False)
+    }
+
+    for index in df.index[valid_mask]:
+        parent_id = str(df.at[index, "parent_image_id"])
+        original = original_lookup.get(parent_id)
+        if original is not None:
+            df.at[index, "original_baseline_variant_id"] = original.variant_id
+            df.at[index, "original_baseline_fake_probability"] = float(original.fake_probability)
+            df.at[index, "original_baseline_real_probability"] = float(original.real_probability)
+            df.at[index, "original_baseline_prediction"] = str(original.prediction)
+            df.at[index, "original_baseline_confusion_type"] = str(original.confusion_type or original.result)
+
+    for index in df.index[stress_mask]:
+        key = (
+            str(df.at[index, "parent_image_id"]),
+            str(df.at[index, "target_dimension"]),
+            str(df.at[index, "resize_mode"]),
+        )
+        clean = clean_lookup.get(key)
+        if clean is not None:
+            df.at[index, "clean_baseline_variant_id"] = clean.variant_id
+            df.at[index, "clean_baseline_fake_probability"] = float(clean.fake_probability)
+            df.at[index, "clean_baseline_real_probability"] = float(clean.real_probability)
+            df.at[index, "clean_baseline_prediction"] = str(clean.prediction)
+            df.at[index, "clean_baseline_confusion_type"] = str(clean.confusion_type or clean.result)
+            df.at[index, "prediction_transition"] = f"{str(clean.confusion_type or clean.result)}_to_{str(df.at[index, 'confusion_type'] or df.at[index, 'result'])}"
+            df.at[index, "score_delta_vs_clean"] = float(df.at[index, "fake_probability"]) - float(clean.fake_probability)
+
+        original = original_lookup.get(str(df.at[index, "parent_image_id"]))
+        if original is not None:
+            df.at[index, "score_delta_vs_original"] = float(df.at[index, "fake_probability"]) - float(original.fake_probability)
+
+    return normalize_runtime_dtypes(df)
 
 
 def export_failed(row: Any, tested_path: Path | str | None, paths: RunPaths) -> None:
@@ -1172,6 +1287,37 @@ def roc_auc_score_manual(y_true: Any, scores: Any) -> float:
     return float(auc)
 
 
+def pr_auc_score_manual(y_true: Any, scores: Any) -> float:
+    y = np.asarray(y_true, dtype=int)
+    s = np.asarray(scores, dtype=float)
+    if int((y == 1).sum()) == 0:
+        return float("nan")
+
+    order = np.argsort(-s, kind="mergesort")
+    y_sorted = y[order]
+    tp = np.cumsum(y_sorted == 1)
+    fp = np.cumsum(y_sorted == 0)
+    precision = tp / np.maximum(tp + fp, 1)
+    recall = tp / max(int((y == 1).sum()), 1)
+    precision = np.r_[1.0, precision]
+    recall = np.r_[0.0, recall]
+    if hasattr(np, "trapezoid"):
+        return float(np.trapezoid(precision, recall))
+    return float(np.trapz(precision, recall))
+
+
+TRANSITION_TYPES = [
+    "TN_to_TN",
+    "TN_to_FP",
+    "FP_to_TN",
+    "FP_to_FP",
+    "TP_to_TP",
+    "TP_to_FN",
+    "FN_to_TP",
+    "FN_to_FN",
+]
+
+
 def metrics_for_group(group: Any, threshold: float) -> dict[str, Any]:
     valid = group[(group["error"].fillna("") == "") & group["fake_probability"].notna()].copy()
     count = int(len(valid))
@@ -1187,6 +1333,28 @@ def metrics_for_group(group: Any, threshold: float) -> dict[str, Any]:
     fp = int(((actual == 0) & (predicted == 1)).sum())
     fn = int(((actual == 1) & (predicted == 0)).sum())
 
+    valid["_threshold_confusion_type"] = [
+        result_from_binary(int(actual_value), int(predicted_value))
+        for actual_value, predicted_value in zip(actual, predicted)
+    ]
+    stress_valid = valid[
+        valid["test_type"].eq("stress")
+        & valid["clean_baseline_fake_probability"].notna()
+    ].copy()
+    stress_count = int(len(stress_valid))
+    transitions: dict[str, int] = {transition: 0 for transition in TRANSITION_TYPES}
+    if stress_count:
+        clean_predicted = (stress_valid["clean_baseline_fake_probability"].astype(float) >= threshold).astype(int)
+        clean_confusion = [
+            result_from_binary(int(actual_value), int(predicted_value))
+            for actual_value, predicted_value in zip(stress_valid["actual_binary"].astype(int), clean_predicted)
+        ]
+        current_confusion = stress_valid["_threshold_confusion_type"].tolist()
+        for before, after in zip(clean_confusion, current_confusion):
+            transition = f"{before}_to_{after}"
+            if transition in transitions:
+                transitions[transition] += 1
+
     precision = safe_div(tp, tp + fp)
     recall = safe_div(tp, tp + fn)
     specificity = safe_div(tn, tn + fp)
@@ -1195,7 +1363,7 @@ def metrics_for_group(group: Any, threshold: float) -> dict[str, Any]:
     f1 = safe_div(2 * precision * recall, precision + recall)
     mcc_den = math.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
 
-    return {
+    metrics = {
         "count": count,
         "real_count": int((actual == 0).sum()),
         "fake_count": int((actual == 1).sum()),
@@ -1217,6 +1385,7 @@ def metrics_for_group(group: Any, threshold: float) -> dict[str, Any]:
         "balanced_accuracy": np.nanmean([recall, specificity]),
         "MCC": ((tp * tn) - (fp * fn)) / mcc_den if mcc_den else np.nan,
         "ROC_AUC": roc_auc_score_manual(actual, scores),
+        "PR_AUC": pr_auc_score_manual(actual, scores),
         "score_mean": scores.mean(),
         "score_median": scores.median(),
         "score_std": scores.std(ddof=0),
@@ -1224,16 +1393,31 @@ def metrics_for_group(group: Any, threshold: float) -> dict[str, Any]:
         "score_max": scores.max(),
         "score_p95": scores.quantile(0.95),
         "score_p99": scores.quantile(0.99),
+        "stress_count_with_clean_baseline": stress_count,
+        "score_delta_vs_clean_mean": stress_valid["score_delta_vs_clean"].astype(float).mean() if stress_count and "score_delta_vs_clean" in stress_valid else np.nan,
+        "score_delta_vs_clean_median": stress_valid["score_delta_vs_clean"].astype(float).median() if stress_count and "score_delta_vs_clean" in stress_valid else np.nan,
+        "score_delta_vs_clean_min": stress_valid["score_delta_vs_clean"].astype(float).min() if stress_count and "score_delta_vs_clean" in stress_valid else np.nan,
+        "score_delta_vs_clean_max": stress_valid["score_delta_vs_clean"].astype(float).max() if stress_count and "score_delta_vs_clean" in stress_valid else np.nan,
     }
+    for transition, value in transitions.items():
+        metrics[transition] = value
+        metrics[f"{transition}_rate"] = safe_div(value, stress_count)
+    return metrics
 
 
 def empty_metrics() -> dict[str, Any]:
     keys = [
         "count", "real_count", "fake_count", "TP", "TN", "FP", "FN", "accuracy", "precision", "recall",
         "sensitivity", "specificity", "TNR", "FPR", "FNR", "NPV", "FDR", "F1", "balanced_accuracy", "MCC",
-        "ROC_AUC", "score_mean", "score_median", "score_std", "score_min", "score_max", "score_p95", "score_p99",
+        "ROC_AUC", "PR_AUC", "score_mean", "score_median", "score_std", "score_min", "score_max", "score_p95", "score_p99",
+        "stress_count_with_clean_baseline", "score_delta_vs_clean_mean", "score_delta_vs_clean_median",
+        "score_delta_vs_clean_min", "score_delta_vs_clean_max",
     ]
-    return {key: 0 if key in {"count", "real_count", "fake_count", "TP", "TN", "FP", "FN"} else np.nan for key in keys}
+    values = {key: 0 if key in {"count", "real_count", "fake_count", "TP", "TN", "FP", "FN", "stress_count_with_clean_baseline"} else np.nan for key in keys}
+    for transition in TRANSITION_TYPES:
+        values[transition] = 0
+        values[f"{transition}_rate"] = np.nan
+    return values
 
 
 def safe_div(numerator: float, denominator: float) -> float:
@@ -1256,12 +1440,15 @@ def create_metrics_reports(df: Any, paths: RunPaths, threshold: float) -> tuple[
         ("test_type", ["test_type"]),
         ("source", ["source"]),
         ("actual_label", ["actual_label"]),
+        ("processing_variant", ["processing_variant"]),
         ("target_dimension", ["target_dimension"]),
         ("resize_mode", ["resize_mode"]),
         ("stress_type", ["stress_type"]),
+        ("stress_level", ["stress_level"]),
         ("stress_type_level", ["stress_type", "stress_level"]),
         ("source_label", ["source", "actual_label"]),
         ("source_test_type", ["source", "test_type"]),
+        ("source_processing_variant", ["source", "processing_variant"]),
         ("source_resolution", ["source", "target_dimension", "resize_mode"]),
         ("source_stress", ["source", "stress_type", "stress_level"]),
         ("resolution_bucket", ["resolution_bucket"]),
@@ -1300,15 +1487,35 @@ def create_threshold_sweep(df: Any) -> Any:
 
     for threshold in thresholds:
         rows.append({**{"threshold": threshold, "group": "overall", "group_value": "all"}, **metrics_for_group(valid, threshold)})
+        for actual_label, group in valid.groupby("actual_label", dropna=False):
+            rows.append({**{"threshold": threshold, "group": "actual_label", "group_value": actual_label}, **metrics_for_group(group, threshold)})
         for test_type, group in valid.groupby("test_type", dropna=False):
             rows.append({**{"threshold": threshold, "group": "test_type", "group_value": test_type}, **metrics_for_group(group, threshold)})
         for source, group in valid.groupby("source", dropna=False):
             rows.append({**{"threshold": threshold, "group": "source", "group_value": source}, **metrics_for_group(group, threshold)})
+        for processing_variant, group in valid.groupby("processing_variant", dropna=False):
+            rows.append({**{"threshold": threshold, "group": "processing_variant", "group_value": processing_variant}, **metrics_for_group(group, threshold)})
         for target, group in valid.groupby("target_dimension", dropna=False):
             rows.append({**{"threshold": threshold, "group": "target_dimension", "group_value": target}, **metrics_for_group(group, threshold)})
+        for keys, group in valid.groupby(["target_dimension", "resize_mode"], dropna=False):
+            rows.append(
+                {
+                    **{"threshold": threshold, "group": "resolution", "target_dimension": keys[0], "resize_mode": keys[1]},
+                    **metrics_for_group(group, threshold),
+                }
+            )
         stress_valid = valid[valid["test_type"].eq("stress")]
         for stress_type, group in stress_valid.groupby("stress_type", dropna=False):
             rows.append({**{"threshold": threshold, "group": "stress_type", "group_value": stress_type}, **metrics_for_group(group, threshold)})
+        for stress_level, group in stress_valid.groupby("stress_level", dropna=False):
+            rows.append({**{"threshold": threshold, "group": "stress_level", "group_value": stress_level}, **metrics_for_group(group, threshold)})
+        for keys, group in stress_valid.groupby(["stress_type", "stress_level"], dropna=False):
+            rows.append(
+                {
+                    **{"threshold": threshold, "group": "stress_type_level", "stress_type": keys[0], "stress_level": keys[1]},
+                    **metrics_for_group(group, threshold),
+                }
+            )
 
     return pd.DataFrame(rows)
 
@@ -1367,7 +1574,7 @@ def write_summary(paths: RunPaths, spec: ModelSpec, df: Any, overall: Any, by_gr
         "",
         "Overall metrics:",
     ]
-    for key in ["count", "real_count", "fake_count", "TP", "TN", "FP", "FN", "accuracy", "precision", "recall", "specificity", "FPR", "FNR", "F1", "balanced_accuracy", "MCC", "ROC_AUC"]:
+    for key in ["count", "real_count", "fake_count", "TP", "TN", "FP", "FN", "accuracy", "precision", "recall", "specificity", "FPR", "FNR", "F1", "balanced_accuracy", "MCC", "ROC_AUC", "PR_AUC"]:
         value = metrics.get(key, "")
         if isinstance(value, float):
             lines.append(f"{key:<18}: {value:.6f}")
@@ -1375,7 +1582,7 @@ def write_summary(paths: RunPaths, spec: ModelSpec, df: Any, overall: Any, by_gr
             lines.append(f"{key:<18}: {value}")
 
     if not by_group.empty:
-        display_cols = [col for col in ["group", "source", "actual_label", "test_type", "stress_type", "stress_level", "target_dimension", "resize_mode", "count", "TP", "TN", "FP", "FN", "accuracy", "F1", "FPR", "FNR"] if col in by_group.columns]
+        display_cols = [col for col in ["group", "source", "actual_label", "test_type", "processing_variant", "stress_type", "stress_level", "target_dimension", "resize_mode", "count", "TP", "TN", "FP", "FN", "accuracy", "F1", "FPR", "FNR"] if col in by_group.columns]
         lines.extend(["", "Top grouped rows:", by_group[display_cols].head(30).to_string(index=False)])
 
     paths.summary_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1422,6 +1629,7 @@ def run_model(images: Any, spec: ModelSpec, args: argparse.Namespace) -> None:
 
     classifier = load_classifier(spec)
     df = run_inference(df, classifier, paths, args)
+    df = annotate_clean_and_stress_baselines(df, args.threshold)
     save_checkpoint(df, paths)
 
     overall, by_group, _threshold_sweep, _confusion = create_metrics_reports(df, paths, args.threshold)
