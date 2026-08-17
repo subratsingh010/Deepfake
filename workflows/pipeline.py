@@ -83,6 +83,8 @@ FAKE_LABEL_PATTERNS = [
     "label_0",
 ]
 
+UNASSIGNED_SOURCE = "unassigned"
+
 IGNORED_DATA_DIRS = {
     ".git",
     ".agents",
@@ -573,16 +575,6 @@ def direct_images(directory: Path) -> list[Path]:
     return sorted(path for path in directory.iterdir() if is_supported_image_path(path))
 
 
-def infer_direct_file_source(path: Path, actual_label: str, fallback: str) -> str:
-    if actual_label != "fake":
-        return fallback
-
-    stem = clean_name(path.stem).lower()
-    if stem.startswith(("gmni", "gemni", "gemini")):
-        return "gemini"
-    return "chatgpt"
-
-
 def discover_images(data_root: Path, random_seed: int, balance_labels: bool) -> Any:
     rows: list[dict[str, Any]] = []
     data_root = resolve_dataset_root(data_root)
@@ -598,12 +590,7 @@ def discover_images(data_root: Path, random_seed: int, balance_labels: bool) -> 
             for source_dir in source_dirs:
                 add_source_rows(rows, data_root, source_dir, source_dir.name, actual_label)
             if direct_files:
-                grouped_files: dict[str, list[Path]] = {}
-                for path in direct_files:
-                    source = infer_direct_file_source(path, actual_label, actual_label)
-                    grouped_files.setdefault(source, []).append(path)
-                for source, files in sorted(grouped_files.items()):
-                    add_file_rows(rows, data_root, files, source, actual_label, label_dir)
+                add_file_rows(rows, data_root, direct_files, UNASSIGNED_SOURCE, actual_label, label_dir)
 
         extra_real_dirs = [
             child
@@ -1095,6 +1082,33 @@ def save_checkpoint(df: Any, paths: RunPaths) -> None:
     df[CENTRAL_COLUMNS].to_csv(paths.main_csv, index=False)
 
 
+def failed_output_dir(row: Any, paths: RunPaths) -> Path:
+    result = clean_name(row.get("result", ""))
+    test_type = str(row.get("test_type", "")).strip().lower()
+    target = clean_name(row.get("target_dimension", ""))
+    resize_mode = clean_name(row.get("resize_mode", ""))
+
+    if test_type == "stress":
+        base = paths.failed_dir / "stress" / result
+        if target == "original":
+            base = base / "original"
+        else:
+            base = base / target / (resize_mode or "aspect")
+        return base / clean_name(row.get("stress_type", "")) / clean_name(row.get("stress_level", ""))
+
+    base = paths.failed_dir / "clean" / result
+    if target == "original":
+        return base / "original"
+    return base / target / (resize_mode or "aspect")
+
+
+def failed_output_name(row: Any, source_path: Path) -> str:
+    variant_id = clean_name(row.get("variant_id", "variant"))
+    score = float(row.get("fake_probability", 0.0))
+    extension = source_path.suffix.lower() or ".jpg"
+    return f"{variant_id}_score_{score:.4f}{extension}"
+
+
 def annotate_clean_and_stress_baselines(df: Any, threshold: float) -> Any:
     df = normalize_runtime_dtypes(df)
     valid_mask = (df["error"].fillna("") == "") & df["fake_probability"].notna()
@@ -1156,17 +1170,9 @@ def export_failed(row: Any, tested_path: Path | str | None, paths: RunPaths) -> 
     source_path = Path(tested_path)
     if not source_path.exists():
         return
-    score = float(row.get("fake_probability", 0.0))
-    out_dir = (
-        paths.failed_dir
-        / test_type_dir_name(row.get("test_type", "unknown"))
-        / result
-        / clean_name(row.get("actual_label", ""))
-        / clean_name(row.get("source", ""))
-    )
+    out_dir = failed_output_dir(row, paths)
     out_dir.mkdir(parents=True, exist_ok=True)
-    name = f"score_{score:.4f}_{clean_name(row.get('variant_id', 'variant'))}_{clean_name(source_path.name)}"
-    shutil.copy2(source_path, out_dir / name)
+    shutil.copy2(source_path, out_dir / failed_output_name(row, source_path))
 
 
 def run_inference(df: Any, classifier: Any, paths: RunPaths, args: argparse.Namespace) -> Any:
