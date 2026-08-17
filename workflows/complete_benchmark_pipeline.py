@@ -127,7 +127,7 @@ class ModelSpec:
 class RunPaths:
     output_dir: Path
     generated_dir: Path
-    misclassified_dir: Path
+    failed_dir: Path
     main_csv: Path
     metrics_overall_csv: Path
     metrics_by_group_csv: Path
@@ -341,7 +341,7 @@ def run_paths(output_root: Path, spec: ModelSpec) -> RunPaths:
     return RunPaths(
         output_dir=output_dir,
         generated_dir=output_dir / "generated_variants",
-        misclassified_dir=output_dir / "misclassified",
+        failed_dir=output_dir / "failed",
         main_csv=output_dir / f"benchmark_{spec.acronym}.csv",
         metrics_overall_csv=output_dir / "metrics_overall.csv",
         metrics_by_group_csv=output_dir / "metrics_by_group.csv",
@@ -357,7 +357,7 @@ def prepare_output_dirs(paths: RunPaths, clean_output: bool, keep_generated: boo
     if clean_output and paths.output_dir.exists():
         shutil.rmtree(paths.output_dir)
     paths.output_dir.mkdir(parents=True, exist_ok=True)
-    paths.misclassified_dir.mkdir(parents=True, exist_ok=True)
+    paths.failed_dir.mkdir(parents=True, exist_ok=True)
     if keep_generated:
         paths.generated_dir.mkdir(parents=True, exist_ok=True)
 
@@ -909,7 +909,7 @@ def save_checkpoint(df: Any, paths: RunPaths) -> None:
     df[CENTRAL_COLUMNS].to_csv(paths.main_csv, index=False)
 
 
-def export_misclassified(row: Any, tested_path: Path | str | None, paths: RunPaths) -> None:
+def export_failed(row: Any, tested_path: Path | str | None, paths: RunPaths) -> None:
     result = str(row.get("result", ""))
     if result not in {"FP", "FN"} or tested_path is None:
         return
@@ -917,7 +917,7 @@ def export_misclassified(row: Any, tested_path: Path | str | None, paths: RunPat
     if not source_path.exists():
         return
     score = float(row.get("fake_probability", 0.0))
-    out_dir = paths.misclassified_dir / result / clean_name(row.get("actual_label", "")) / clean_name(row.get("source", ""))
+    out_dir = paths.failed_dir / result / clean_name(row.get("actual_label", "")) / clean_name(row.get("source", ""))
     out_dir.mkdir(parents=True, exist_ok=True)
     name = f"score_{score:.4f}_{clean_name(row.get('variant_id', 'variant'))}_{clean_name(source_path.name)}"
     shutil.copy2(source_path, out_dir / name)
@@ -961,7 +961,7 @@ def run_inference(df: Any, classifier: Any, paths: RunPaths, args: argparse.Name
                         fake_score = extract_fake_probability(output)
                         update_prediction_row(df, index, fake_score, per_image_ms, args.threshold)
                         tested_path = temp_path or Path(df.at[index, "original_path"])
-                        export_misclassified(df.loc[index], tested_path, paths)
+                        export_failed(df.loc[index], tested_path, paths)
                         if temp_path and temp_path.exists() and not args.keep_generated_variants:
                             temp_path.unlink()
                 except Exception as error:
