@@ -4,7 +4,8 @@ Complete real/fake deepfake benchmark pipeline.
 
 What this script does:
   - discovers real and fake image datasets dynamically
-  - runs one or more Hugging Face image-classification models
+  - reads enabled model configs from config.py
+  - runs one or more deepfake model adapters through a shared interface
   - saves each model into its own output/<model_acronym>/ directory
   - evaluates original + resized variants without modifying source images
   - writes one central prediction CSV per model
@@ -34,8 +35,8 @@ import math
 import os
 import re
 import shutil
+import sys
 import tempfile
-import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from importlib import import_module
@@ -43,6 +44,11 @@ from pathlib import Path
 from typing import Any
 
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from workflows.model_base import BaseDeepfakeModel, validate_prediction_dict
 
 
 # ============================================================
@@ -51,10 +57,6 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 DEFAULT_DATA_ROOT = Path("/Users/subrat/Desktop/Deepfake")
 DEFAULT_OUTPUT_ROOT = Path.cwd() / "output"
-
-DEFAULT_MODELS = [
-    "buildborderless/CommunityForensics-DeepfakeDet-ViT=cf_vit",
-]
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
@@ -126,6 +128,15 @@ DEVICE: str | int = -1
 class ModelSpec:
     model_name: str
     acronym: str
+    adapter_path: str
+    checkpoint_path: str
+    input_size: Any
+    batch_size: int
+    device: Any
+    threshold: float
+    output_format: str
+    class_order: list[str]
+    normalization: dict[str, Any]
 
 
 @dataclass
@@ -292,40 +303,71 @@ COLUMN_DESCRIPTIONS = {
 # RUNTIME / ARGS
 # ============================================================
 
+def load_dotenv_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
+
+
+def load_project_config() -> tuple[dict[str, Any], dict[str, Any]]:
+    load_dotenv_file(PROJECT_ROOT / ".env")
+    config_module = import_module("config")
+    benchmark_config = dict(getattr(config_module, "BENCHMARK_CONFIG"))
+    model_configs = dict(getattr(config_module, "MODEL_CONFIGS"))
+
+    if os.environ.get("DATA_ROOT"):
+        benchmark_config["data_root"] = Path(os.environ["DATA_ROOT"])
+    if os.environ.get("OUTPUT_ROOT"):
+        benchmark_config["output_root"] = Path(os.environ["OUTPUT_ROOT"])
+    if os.environ.get("DEVICE"):
+        benchmark_config["device"] = os.environ["DEVICE"]
+    return benchmark_config, model_configs
+
+
+def config_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def apply_benchmark_config(benchmark_config: dict[str, Any]) -> argparse.Namespace:
+    global TARGET_DIMENSIONS, RESIZE_MODES, JPEG_QUALITY_LEVELS, CHECKPOINT_EVERY, RANDOM_SEED, KEEP_GENERATED_VARIANTS, METADATA_WORKERS
+
+    TARGET_DIMENSIONS = list(benchmark_config.get("target_dimensions", TARGET_DIMENSIONS))
+    RESIZE_MODES = list(benchmark_config.get("resize_modes", RESIZE_MODES))
+    JPEG_QUALITY_LEVELS = list(benchmark_config.get("jpeg_quality_levels", JPEG_QUALITY_LEVELS))
+    CHECKPOINT_EVERY = int(benchmark_config.get("checkpoint_every", CHECKPOINT_EVERY))
+    RANDOM_SEED = int(benchmark_config.get("random_seed", RANDOM_SEED))
+    KEEP_GENERATED_VARIANTS = config_bool(benchmark_config.get("keep_generated_variants"), KEEP_GENERATED_VARIANTS)
+    METADATA_WORKERS = int(benchmark_config.get("metadata_workers", METADATA_WORKERS))
+
+    return argparse.Namespace(
+        data_root=Path(benchmark_config.get("data_root", DEFAULT_DATA_ROOT)),
+        output_root=Path(benchmark_config.get("output_root", DEFAULT_OUTPUT_ROOT)),
+        checkpoint_every=CHECKPOINT_EVERY,
+        random_seed=RANDOM_SEED,
+        keep_generated_variants=KEEP_GENERATED_VARIANTS,
+        clean_model_output=config_bool(benchmark_config.get("clean_model_output"), True),
+        balance_labels=config_bool(benchmark_config.get("balance_labels"), True),
+        device=benchmark_config.get("device", "auto"),
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Complete real/fake deepfake benchmark pipeline.")
-    parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
-    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
-    parser.add_argument(
-        "--models",
-        nargs="+",
-        default=DEFAULT_MODELS,
-        help="One or more models. Use model_id=acronym, for example buildborderless/...=cf_vit",
-    )
-    parser.add_argument("--threshold", type=float, default=THRESHOLD)
-    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
-    parser.add_argument("--checkpoint-every", type=int, default=CHECKPOINT_EVERY)
-    parser.add_argument("--random-seed", type=int, default=RANDOM_SEED)
-    parser.add_argument(
-        "--keep-generated-variants",
-        action="store_true",
-        default=KEEP_GENERATED_VARIANTS,
-        help="Persist resized variants under each model output directory.",
-    )
-    parser.add_argument(
-        "--no-clean-model-output",
-        action="store_true",
-        help="Do not remove an existing output/<model_acronym>/ directory before running that model. By default, reruns overwrite that model directory.",
-    )
     parser.add_argument(
         "--plan-only",
         action="store_true",
         help="Discover images and print planned variant counts, but do not load models or run inference.",
-    )
-    parser.add_argument(
-        "--no-balance-labels",
-        action="store_true",
-        help="Use all discovered images instead of randomly downsampling each label to the smallest label count.",
     )
     return parser.parse_args()
 
@@ -339,7 +381,7 @@ def ensure_package(import_name: str, package_name: str | None = None) -> Any:
         return import_module(import_name)
 
 
-def ensure_runtime_dependencies(need_model_runtime: bool = True) -> None:
+def ensure_runtime_dependencies(need_model_runtime: bool = True, preferred_device: Any = "auto") -> None:
     global cv2, np, pd, torch, Image, ImageEnhance, ImageFilter, ImageOps, tqdm, pipeline, DEVICE
 
     np = ensure_package("numpy")
@@ -358,7 +400,9 @@ def ensure_runtime_dependencies(need_model_runtime: bool = True) -> None:
     torch = ensure_package("torch")
     pipeline = ensure_package("transformers").pipeline
 
-    if torch.backends.mps.is_available():
+    if preferred_device not in {None, "", "auto"}:
+        DEVICE = preferred_device
+    elif torch.backends.mps.is_available():
         DEVICE = "mps"
     elif torch.cuda.is_available():
         DEVICE = 0
@@ -366,24 +410,56 @@ def ensure_runtime_dependencies(need_model_runtime: bool = True) -> None:
         DEVICE = -1
 
 
-def parse_model_specs(values: list[str]) -> list[ModelSpec]:
+def parse_model_specs(model_configs: dict[str, Any], default_device: Any = "auto") -> list[ModelSpec]:
     specs: list[ModelSpec] = []
     seen: set[str] = set()
 
-    for value in values:
-        if "=" in value:
-            model_name, acronym = value.split("=", 1)
-        else:
-            model_name = value
-            acronym = model_acronym_from_name(model_name)
-        model_name = model_name.strip()
-        acronym = clean_name(acronym.strip() or model_acronym_from_name(model_name)).lower()
-        if not model_name:
-            raise ValueError(f"Invalid empty model spec: {value}")
+    for acronym, model_config in model_configs.items():
+        config = dict(model_config)
+        if not config_bool(config.get("enabled"), default=False):
+            continue
+        acronym = clean_name(acronym).lower()
         if acronym in seen:
             raise ValueError(f"Duplicate model acronym: {acronym}")
+        required = [
+            "adapter_path",
+            "checkpoint_path",
+            "input_size",
+            "batch_size",
+            "device",
+            "threshold",
+            "output_format",
+            "class_order",
+            "normalization",
+        ]
+        missing = [key for key in required if key not in config]
+        if missing:
+            raise ValueError(f"Model config {acronym} is missing required keys: {missing}")
+        checkpoint_path = str(config["checkpoint_path"]).strip()
+        if not checkpoint_path:
+            raise ValueError(f"Model config {acronym} has empty checkpoint_path")
+        device = config.get("device", "auto")
+        if device in {None, "", "auto"}:
+            device = default_device
         seen.add(acronym)
-        specs.append(ModelSpec(model_name=model_name, acronym=acronym))
+        specs.append(
+            ModelSpec(
+                model_name=checkpoint_path,
+                acronym=acronym,
+                adapter_path=str(config["adapter_path"]),
+                checkpoint_path=checkpoint_path,
+                input_size=config.get("input_size"),
+                batch_size=int(config["batch_size"]),
+                device=device,
+                threshold=float(config["threshold"]),
+                output_format=str(config["output_format"]),
+                class_order=list(config["class_order"]),
+                normalization=dict(config["normalization"] or {}),
+            )
+        )
+
+    if not specs:
+        raise ValueError("No enabled models found in config.py MODEL_CONFIGS")
 
     return specs
 
@@ -392,6 +468,19 @@ def model_acronym_from_name(model_name: str) -> str:
     tail = model_name.rstrip("/").split("/")[-1]
     tail = re.sub(r"[^A-Za-z0-9]+", "_", tail).strip("_").lower()
     return tail[:48] or "model"
+
+
+def resolve_model_device(device: Any) -> Any:
+    if device in {None, "", "auto"}:
+        return DEVICE
+    text = str(device).strip().lower()
+    if text == "cpu":
+        return -1
+    if text in {"mps", "cuda"}:
+        return text
+    if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+        return int(text)
+    return device
 
 
 def run_paths(output_root: Path, spec: ModelSpec) -> RunPaths:
@@ -993,14 +1082,37 @@ def prepare_variant(row: Any, paths: RunPaths, temp_dir: Path, keep_generated: b
 # MODEL OUTPUT HANDLING
 # ============================================================
 
-def load_classifier(spec: ModelSpec):
+def import_adapter_class(adapter_path: str) -> type[BaseDeepfakeModel]:
+    module_name, class_name = adapter_path.rsplit(".", 1)
+    module = import_module(module_name)
+    adapter_class = getattr(module, class_name)
+    if not issubclass(adapter_class, BaseDeepfakeModel):
+        raise TypeError(f"Adapter {adapter_path} must subclass BaseDeepfakeModel")
+    return adapter_class
+
+
+def load_model_adapter(spec: ModelSpec) -> BaseDeepfakeModel:
     print("\nLoading model")
     print(f"Model   : {spec.model_name}")
     print(f"Acronym : {spec.acronym}")
-    print(f"Device  : {DEVICE}")
-    classifier = pipeline("image-classification", model=spec.model_name, device=DEVICE)
-    print(f"id2label: {getattr(classifier.model.config, 'id2label', {})}")
-    return classifier
+    print(f"Adapter : {spec.adapter_path}")
+    print(f"Device  : {spec.device}")
+    adapter_class = import_adapter_class(spec.adapter_path)
+    adapter_config = {
+        "adapter_path": spec.adapter_path,
+        "checkpoint_path": spec.checkpoint_path,
+        "input_size": spec.input_size,
+        "batch_size": spec.batch_size,
+        "device": spec.device,
+        "resolved_device": resolve_model_device(spec.device),
+        "threshold": spec.threshold,
+        "output_format": spec.output_format,
+        "class_order": spec.class_order,
+        "normalization": spec.normalization,
+    }
+    adapter = adapter_class(spec.acronym, adapter_config)
+    adapter.load()
+    return adapter
 
 
 def normalize_pipeline_outputs(outputs: Any) -> list[list[dict[str, Any]]]:
@@ -1065,6 +1177,17 @@ def update_prediction_row(df: Any, index: int, fake_score: float, inference_ms: 
     df.at[index, "is_correct"] = int(actual_binary == prediction_binary)
     df.at[index, "inference_ms"] = inference_ms
     df.at[index, "error"] = ""
+
+
+def update_prediction_row_from_adapter(df: Any, index: int, prediction_dict: dict[str, Any]) -> None:
+    prediction_dict = validate_prediction_dict(prediction_dict)
+    update_prediction_row(
+        df,
+        index,
+        prediction_dict["fake_probability"],
+        prediction_dict["inference_ms"],
+        prediction_dict["threshold"],
+    )
 
 
 def is_completed(row: Any) -> bool:
@@ -1175,19 +1298,20 @@ def export_failed(row: Any, tested_path: Path | str | None, paths: RunPaths) -> 
     shutil.copy2(source_path, out_dir / failed_output_name(row, source_path))
 
 
-def run_inference(df: Any, classifier: Any, paths: RunPaths, args: argparse.Namespace) -> Any:
+def run_inference(df: Any, model: BaseDeepfakeModel, paths: RunPaths, args: argparse.Namespace) -> Any:
     df = normalize_runtime_dtypes(df)
     pending_indexes = [index for index, row in df.iterrows() if not is_completed(row)]
     if not pending_indexes:
         print("No pending variants.")
         return df
 
-    total_batches = math.ceil(len(pending_indexes) / args.batch_size)
+    batch_size = int(model.batch_size)
+    total_batches = math.ceil(len(pending_indexes) / batch_size)
     completed_batches = 0
-    for start in tqdm(range(0, len(pending_indexes), args.batch_size), total=total_batches, desc="Inference", unit="batch"):
+    for start in tqdm(range(0, len(pending_indexes), batch_size), total=total_batches, desc="Inference", unit="batch"):
         with tempfile.TemporaryDirectory(prefix="complete_benchmark_") as tmp:
             temp_dir = Path(tmp)
-            batch_indexes = pending_indexes[start : start + args.batch_size]
+            batch_indexes = pending_indexes[start : start + batch_size]
             model_inputs: list[Any] = []
             prepared: list[tuple[int, Path | None]] = []
 
@@ -1204,15 +1328,12 @@ def run_inference(df: Any, classifier: Any, paths: RunPaths, args: argparse.Name
 
             if model_inputs:
                 try:
-                    start_time = time.perf_counter()
-                    outputs = classifier(model_inputs, batch_size=args.batch_size, top_k=None, function_to_apply="sigmoid")
-                    elapsed_ms = (time.perf_counter() - start_time) * 1000
-                    per_image_ms = elapsed_ms / len(model_inputs)
-                    normalized_outputs = normalize_pipeline_outputs(outputs)
+                    predictions = model.predict_batch(model_inputs)
+                    if len(predictions) != len(prepared):
+                        raise ValueError(f"Model returned {len(predictions)} predictions for {len(prepared)} inputs")
 
-                    for (index, temp_path), output in zip(prepared, normalized_outputs):
-                        fake_score = extract_fake_probability(output)
-                        update_prediction_row(df, index, fake_score, per_image_ms, args.threshold)
+                    for (index, temp_path), prediction_dict in zip(prepared, predictions):
+                        update_prediction_row_from_adapter(df, index, prediction_dict)
                         tested_path = temp_path or Path(df.at[index, "original_path"])
                         export_failed(df.loc[index], tested_path, paths)
                         if temp_path and temp_path.exists() and not args.keep_generated_variants:
@@ -1579,7 +1700,7 @@ def print_report(paths: RunPaths, spec: ModelSpec, overall: Any) -> None:
 
 def run_model(images: Any, spec: ModelSpec, args: argparse.Namespace) -> None:
     paths = run_paths(args.output_root.expanduser().resolve(), spec)
-    prepare_output_dirs(paths, clean_output=not args.no_clean_model_output, keep_generated=args.keep_generated_variants)
+    prepare_output_dirs(paths, clean_output=args.clean_model_output, keep_generated=args.keep_generated_variants)
     write_column_guide(paths)
 
     print("\n" + "=" * 80)
@@ -1587,24 +1708,26 @@ def run_model(images: Any, spec: ModelSpec, args: argparse.Namespace) -> None:
     print("=" * 80)
     print(f"Model      : {spec.model_name}")
     print(f"Output dir : {paths.output_dir}")
-    print(f"Overwrite  : {'no, keeping existing model output' if args.no_clean_model_output else 'yes, cleaning this model output before run'}")
+    print(f"Overwrite  : {'yes, cleaning this model output before run' if args.clean_model_output else 'no, keeping existing model output'}")
+    print(f"Batch size : {spec.batch_size}")
+    print(f"Threshold  : {spec.threshold}")
 
-    df = build_plan(images, spec, args.threshold, args.random_seed)
+    df = build_plan(images, spec, spec.threshold, args.random_seed)
     save_checkpoint(df, paths)
     print(f"Planned variants: {len(df):,}")
     print(f"  clean rows    : {int((df['test_type'] == 'clean').sum()):,}")
     print(f"  stress rows   : {int((df['test_type'] == 'stress').sum()):,}")
 
-    classifier = load_classifier(spec)
-    df = run_inference(df, classifier, paths, args)
-    df = annotate_clean_and_stress_baselines(df, args.threshold)
+    model = load_model_adapter(spec)
+    df = run_inference(df, model, paths, args)
+    df = annotate_clean_and_stress_baselines(df, spec.threshold)
     save_checkpoint(df, paths)
 
-    overall, by_group, _threshold_sweep, _confusion = create_metrics_reports(df, paths, args.threshold)
+    overall, by_group, _threshold_sweep, _confusion = create_metrics_reports(df, paths, spec.threshold)
     write_summary(paths, spec, df, overall, by_group)
     print_report(paths, spec, overall)
 
-    del classifier
+    del model
     gc.collect()
     if torch.backends.mps.is_available():
         try:
@@ -1614,9 +1737,12 @@ def run_model(images: Any, spec: ModelSpec, args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    args = parse_args()
-    ensure_runtime_dependencies(need_model_runtime=not args.plan_only)
-    specs = parse_model_specs(args.models)
+    cli_args = parse_args()
+    benchmark_config, model_configs = load_project_config()
+    args = apply_benchmark_config(benchmark_config)
+    args.plan_only = cli_args.plan_only
+    ensure_runtime_dependencies(need_model_runtime=not args.plan_only, preferred_device=args.device)
+    specs = parse_model_specs(model_configs, default_device=args.device)
 
     data_root = resolve_dataset_root(args.data_root)
     print("=" * 80)
@@ -1625,12 +1751,12 @@ def main() -> None:
     print(f"Data root          : {data_root}")
     print(f"Output root        : {args.output_root.expanduser().resolve()}")
     print(f"Models             : {', '.join(f'{s.acronym}={s.model_name}' for s in specs)}")
-    print(f"Threshold          : {args.threshold}")
-    print(f"Batch size         : {args.batch_size}")
+    print(f"Thresholds         : {', '.join(f'{s.acronym}={s.threshold}' for s in specs)}")
+    print(f"Batch sizes        : {', '.join(f'{s.acronym}={s.batch_size}' for s in specs)}")
     print(f"Device             : {DEVICE}")
 
     print("\n[1/3] Discovering images...")
-    images = discover_images(data_root, args.random_seed, balance_labels=not args.no_balance_labels)
+    images = discover_images(data_root, args.random_seed, balance_labels=args.balance_labels)
     if images.empty:
         raise RuntimeError(f"No png/jpg/jpeg images found under {data_root}")
     label_counts = label_count_dict(images)
