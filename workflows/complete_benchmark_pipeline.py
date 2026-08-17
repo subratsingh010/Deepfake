@@ -81,6 +81,19 @@ FAKE_LABEL_PATTERNS = [
     "spoof",
     "label_0",
 ]
+
+IGNORED_DATA_DIRS = {
+    ".git",
+    ".agents",
+    ".codex",
+    ".deepeval",
+    ".pycache",
+    "__pycache__",
+    "output",
+    "archive",
+    "workflows",
+    "benchmark_results",
+}
 REAL_LABEL_PATTERNS = [
     "real",
     "authentic",
@@ -472,6 +485,20 @@ def has_images(directory: Path) -> bool:
     return any(is_supported_image_path(path) for path in directory.rglob("*"))
 
 
+def direct_images(directory: Path) -> list[Path]:
+    return sorted(path for path in directory.iterdir() if is_supported_image_path(path))
+
+
+def infer_direct_file_source(path: Path, actual_label: str, fallback: str) -> str:
+    if actual_label != "fake":
+        return fallback
+
+    stem = clean_name(path.stem).lower()
+    if stem.startswith(("gmni", "gemni", "gemini")):
+        return "gemini"
+    return "chatgpt"
+
+
 def discover_images(data_root: Path) -> Any:
     rows: list[dict[str, Any]] = []
     data_root = resolve_dataset_root(data_root)
@@ -479,21 +506,39 @@ def discover_images(data_root: Path) -> Any:
     label_dirs = [child for child in sorted(data_root.iterdir()) if child.is_dir() and folder_label(child.name)]
 
     if label_dirs:
+        label_dir_names = {child.name for child in label_dirs}
         for label_dir in label_dirs:
             actual_label = folder_label(label_dir.name) or "real"
             source_dirs = [child for child in sorted(label_dir.iterdir()) if child.is_dir() and has_images(child)]
-            if not source_dirs and has_images(label_dir):
-                source_dirs = [label_dir]
+            direct_files = direct_images(label_dir)
             for source_dir in source_dirs:
-                source = source_dir.name if source_dir != label_dir else clean_name(label_dir.name)
-                add_source_rows(rows, data_root, source_dir, source, actual_label)
+                add_source_rows(rows, data_root, source_dir, source_dir.name, actual_label)
+            if direct_files:
+                grouped_files: dict[str, list[Path]] = {}
+                for path in direct_files:
+                    source = infer_direct_file_source(path, actual_label, clean_name(label_dir.name))
+                    grouped_files.setdefault(source, []).append(path)
+                for source, files in sorted(grouped_files.items()):
+                    add_file_rows(rows, data_root, files, source, actual_label, label_dir)
+
+        extra_real_dirs = [
+            child
+            for child in sorted(data_root.iterdir())
+            if child.is_dir()
+            and child.name not in label_dir_names
+            and not child.name.startswith(".")
+            and child.name not in IGNORED_DATA_DIRS
+            and has_images(child)
+        ]
+        for source_dir in extra_real_dirs:
+            add_source_rows(rows, data_root, source_dir, source_dir.name, "real")
     else:
         source_dirs = [
             child
             for child in sorted(data_root.iterdir())
             if child.is_dir()
             and not child.name.startswith(".")
-            and child.name not in {"output", "archive", "workflows", "__pycache__"}
+            and child.name not in IGNORED_DATA_DIRS
             and has_images(child)
         ]
         for source_dir in source_dirs:
@@ -518,9 +563,13 @@ def discover_images(data_root: Path) -> Any:
 
 def add_source_rows(rows: list[dict[str, Any]], data_root: Path, source_dir: Path, source: str, actual_label: str) -> None:
     files = sorted(path for path in source_dir.rglob("*") if is_supported_image_path(path))
+    add_file_rows(rows, data_root, files, source, actual_label, source_dir)
+
+
+def add_file_rows(rows: list[dict[str, Any]], data_root: Path, files: list[Path], source: str, actual_label: str, subgroup_root: Path) -> None:
     print(f"{actual_label:<5} {source:<24}: {len(files):,} images")
     for path in files:
-        rel = path.relative_to(source_dir)
+        rel = path.relative_to(subgroup_root)
         subgroup = "" if str(rel.parent) == "." else str(rel.parent)
         image_id = image_id_for_path(path, data_root)
         actual_binary = 1 if actual_label == "fake" else 0
