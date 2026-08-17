@@ -60,6 +60,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 TARGET_DIMENSIONS: list[str | int] = ["original", 1024, 720, 512, 256]
 RESIZE_MODES = ["aspect", "square"]
+JPEG_QUALITY_LEVELS = [95, 80, 60, 40]
 
 BATCH_SIZE = 8
 CHECKPOINT_EVERY = 25
@@ -111,6 +112,8 @@ np = None
 pd = None
 torch = None
 Image = None
+ImageEnhance = None
+ImageFilter = None
 ImageOps = None
 tqdm = None
 pipeline = None
@@ -155,6 +158,9 @@ CENTRAL_COLUMNS = [
     "original_megapixels",
     "target_dimension",
     "resize_mode",
+    "stress_type",
+    "stress_level",
+    "stress_parameter",
     "variant_path",
     "variant_file_name",
     "variant_file_format",
@@ -216,7 +222,7 @@ COLUMN_DESCRIPTIONS = {
     "original_image_id": "Stable hash id for the source image path.",
     "source": "Dataset/source folder name, for example camera, ffhq, or a fake dataset name.",
     "source_subgroup": "Nested subfolder under the source folder, if present.",
-    "test_type": "clean for original/resized non-stress evaluation.",
+    "test_type": "clean for original/resized non-stress evaluation, stress for one controlled stress factor.",
     "actual_label": "Ground-truth label: real or fake.",
     "actual_binary": "Ground-truth binary value: 1=fake, 0=real.",
     "original_path": "Absolute source image path. The script only reads this file.",
@@ -227,6 +233,9 @@ COLUMN_DESCRIPTIONS = {
     "original_megapixels": "Original source image megapixels.",
     "target_dimension": "original, 1024, 720, 512, or 256.",
     "resize_mode": "blank for original, aspect for aspect-preserving resize, square for center-crop square resize.",
+    "stress_type": "Stress family for stress rows, for example blur, brightness, sharpness, contrast, or jpeg_compression. Blank for clean rows.",
+    "stress_level": "Stress level for stress rows, for example low, medium, high, darker, brighter, lower, higher, q80. Blank for clean rows.",
+    "stress_parameter": "Exact stress parameter used, for example radius=2, factor=1.30, or quality=80. Blank for clean rows.",
     "variant_path": "Saved variant path only when --keep-generated-variants is enabled or when original is tested.",
     "variant_file_name": "Logical evaluated filename.",
     "variant_file_format": "Evaluated image extension without dot.",
@@ -309,11 +318,13 @@ def ensure_package(import_name: str, package_name: str | None = None) -> Any:
 
 
 def ensure_runtime_dependencies(need_model_runtime: bool = True) -> None:
-    global cv2, np, pd, torch, Image, ImageOps, tqdm, pipeline, DEVICE
+    global cv2, np, pd, torch, Image, ImageEnhance, ImageFilter, ImageOps, tqdm, pipeline, DEVICE
 
     np = ensure_package("numpy")
     pd = ensure_package("pandas")
     Image = ensure_package("PIL.Image", "pillow")
+    ImageEnhance = ensure_package("PIL.ImageEnhance", "pillow")
+    ImageFilter = ensure_package("PIL.ImageFilter", "pillow")
     ImageOps = ensure_package("PIL.ImageOps", "pillow")
     tqdm = ensure_package("tqdm").tqdm
 
@@ -465,6 +476,10 @@ def image_id_for_path(path: Path, data_root: Path) -> str:
 
 def variant_id_for(parent_id: str, target: str | int, resize_mode: str) -> str:
     return "clean_" + stable_digest(f"{parent_id}|{target}|{resize_mode}", 18)
+
+
+def stress_variant_id_for(parent_id: str, target: str | int, resize_mode: str, stress_type: str, stress_level: str, stress_parameter: str) -> str:
+    return "stress_" + stable_digest(f"{parent_id}|{target}|{resize_mode}|{stress_type}|{stress_level}|{stress_parameter}", 18)
 
 
 def source_save_format(path: Path) -> tuple[str, str, dict[str, Any]]:
@@ -712,6 +727,58 @@ def resize_for_mode(image: Any, target_dimension: str | int, resize_mode: str) -
     return resize_preserve_aspect(image, target_dimension)
 
 
+def stress_specs() -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = [
+        {"stress_type": "blur", "stress_level": "low", "stress_parameter": "radius=1"},
+        {"stress_type": "blur", "stress_level": "medium", "stress_parameter": "radius=2"},
+        {"stress_type": "blur", "stress_level": "high", "stress_parameter": "radius=4"},
+        {"stress_type": "brightness", "stress_level": "darker", "stress_parameter": "factor=0.70"},
+        {"stress_type": "brightness", "stress_level": "brighter", "stress_parameter": "factor=1.30"},
+        {"stress_type": "sharpness", "stress_level": "lower", "stress_parameter": "factor=0.50"},
+        {"stress_type": "sharpness", "stress_level": "higher", "stress_parameter": "factor=2.00"},
+        {"stress_type": "contrast", "stress_level": "lower", "stress_parameter": "factor=0.70"},
+        {"stress_type": "contrast", "stress_level": "higher", "stress_parameter": "factor=1.30"},
+    ]
+    for quality in JPEG_QUALITY_LEVELS:
+        specs.append(
+            {
+                "stress_type": "jpeg_compression",
+                "stress_level": f"q{quality}",
+                "stress_parameter": f"quality={quality}",
+            }
+        )
+    return specs
+
+
+def apply_stress(image: Any, stress_type: str, stress_level: str) -> tuple[Any, int | None]:
+    if stress_type == "blur":
+        radius = {"low": 1, "medium": 2, "high": 4}[stress_level]
+        return image.filter(ImageFilter.GaussianBlur(radius=radius)), None
+
+    if stress_type == "brightness":
+        factor = {"darker": 0.70, "brighter": 1.30}[stress_level]
+        return ImageEnhance.Brightness(image).enhance(factor), None
+
+    if stress_type == "sharpness":
+        factor = {"lower": 0.50, "higher": 2.00}[stress_level]
+        return ImageEnhance.Sharpness(image).enhance(factor), None
+
+    if stress_type == "contrast":
+        factor = {"lower": 0.70, "higher": 1.30}[stress_level]
+        return ImageEnhance.Contrast(image).enhance(factor), None
+
+    if stress_type == "jpeg_compression":
+        quality = int(str(stress_level).replace("q", ""))
+        return image.convert("RGB"), quality
+
+    raise ValueError(f"Unknown stress_type: {stress_type}")
+
+
+def jpeg_save_format(quality: int) -> tuple[str, str, dict[str, Any]]:
+    subsampling = 0 if quality >= 90 else 1 if quality >= 75 else 2
+    return "JPEG", ".jpg", {"quality": quality, "subsampling": subsampling}
+
+
 def image_stats(image: Any) -> dict[str, Any]:
     rgb = image.convert("RGB")
     width, height = rgb.size
@@ -739,18 +806,26 @@ def image_stats(image: Any) -> dict[str, Any]:
 def logical_variant_file_name(row: Any, width: int, height: int, extension: str) -> str:
     source = clean_name(row["source"])
     label = clean_name(row["actual_label"])
+    test_type = clean_name(row["test_type"])
     target = clean_name(row["target_dimension"])
     mode = clean_name(row.get("resize_mode", ""))
     idx = int(stable_digest(str(row["variant_id"]), 10), 16) % 1_000_000
     mode_part = f"{mode}_" if mode else ""
-    return f"clean_{label}_{source}_{target}_{mode_part}{width}x{height}_{idx:06d}{extension}"
+    if str(row["test_type"]) == "stress":
+        stress_type = clean_name(row.get("stress_type", "stress"))
+        stress_level = clean_name(row.get("stress_level", "level"))
+        return f"stress_{label}_{source}_{stress_type}_{stress_level}_{target}_{mode_part}{width}x{height}_{idx:06d}{extension}"
+    return f"{test_type}_{label}_{source}_{target}_{mode_part}{width}x{height}_{idx:06d}{extension}"
 
 
 def generated_path(paths: RunPaths, row: Any, width: int, height: int, extension: str) -> Path:
     return (
         paths.generated_dir
+        / clean_name(row["test_type"])
         / clean_name(row["actual_label"])
         / clean_name(row["source"])
+        / clean_name(row.get("stress_type", "clean"))
+        / clean_name(row.get("stress_level", "none"))
         / clean_name(row["target_dimension"])
         / clean_name(row.get("resize_mode", ""))
         / logical_variant_file_name(row, width, height, extension)
@@ -759,6 +834,7 @@ def generated_path(paths: RunPaths, row: Any, width: int, height: int, extension
 
 def build_plan(images: Any, spec: ModelSpec, threshold: float, random_seed: int) -> Any:
     rows: list[dict[str, Any]] = []
+    specs = stress_specs()
     for _, image in images.iterrows():
         if str(image.get("error", "") or ""):
             row = empty_row()
@@ -784,6 +860,9 @@ def build_plan(images: Any, spec: ModelSpec, threshold: float, random_seed: int)
                         "test_type": "clean",
                         "target_dimension": str(target_dimension),
                         "resize_mode": resize_mode,
+                        "stress_type": "",
+                        "stress_level": "",
+                        "stress_parameter": "",
                         "variant_path": image["original_path"] if target_dimension == "original" else "",
                         "variant_file_name": "",
                         "variant_file_format": image["original_file_format"] if target_dimension == "original" else "",
@@ -795,6 +874,37 @@ def build_plan(images: Any, spec: ModelSpec, threshold: float, random_seed: int)
                     }
                 )
                 rows.append(row)
+
+                for stress_spec in specs:
+                    stress_row = empty_row()
+                    stress_row.update(image.to_dict())
+                    stress_row.update(
+                        {
+                            "variant_id": stress_variant_id_for(
+                                image["parent_image_id"],
+                                target_dimension,
+                                resize_mode,
+                                stress_spec["stress_type"],
+                                stress_spec["stress_level"],
+                                stress_spec["stress_parameter"],
+                            ),
+                            "test_type": "stress",
+                            "target_dimension": str(target_dimension),
+                            "resize_mode": resize_mode,
+                            "stress_type": stress_spec["stress_type"],
+                            "stress_level": stress_spec["stress_level"],
+                            "stress_parameter": stress_spec["stress_parameter"],
+                            "variant_path": "",
+                            "variant_file_name": "",
+                            "variant_file_format": "",
+                            "model_name": spec.model_name,
+                            "model_acronym": spec.acronym,
+                            "threshold": threshold,
+                            "random_seed": random_seed,
+                            "error": "",
+                        }
+                    )
+                    rows.append(stress_row)
     return normalize_runtime_dtypes(pd.DataFrame(rows, columns=CENTRAL_COLUMNS))
 
 
@@ -825,16 +935,26 @@ def prepare_variant(row: Any, paths: RunPaths, temp_dir: Path, keep_generated: b
 
     with open_source_image(source_path) as source_image:
         variant_image = resize_for_mode(source_image, row["target_dimension"], str(row.get("resize_mode", "")))
+        jpeg_quality: int | None = None
+        if str(row.get("test_type", "")) == "stress":
+            variant_image, jpeg_quality = apply_stress(
+                variant_image,
+                str(row.get("stress_type", "")),
+                str(row.get("stress_level", "")),
+            )
         stats = image_stats(variant_image)
 
-        if str(row["target_dimension"]) == "original":
+        if str(row["target_dimension"]) == "original" and str(row.get("test_type", "")) == "clean":
             stats["variant_path"] = str(source_path)
             stats["variant_file_name"] = source_path.name
             stats["variant_file_format"] = source_path.suffix.lower().lstrip(".")
             stats["file_size_mb"] = file_size_mb(source_path)
             return str(source_path), stats, None
 
-        save_format, extension, save_kwargs = source_save_format(source_path)
+        if jpeg_quality is not None:
+            save_format, extension, save_kwargs = jpeg_save_format(jpeg_quality)
+        else:
+            save_format, extension, save_kwargs = source_save_format(source_path)
         out_path = (
             generated_path(paths, row, stats["variant_width"], stats["variant_height"], extension)
             if keep_generated
@@ -1111,17 +1231,30 @@ def safe_div(numerator: float, denominator: float) -> float:
     return float(numerator / denominator) if denominator else float("nan")
 
 
+def clean_variant_count_per_original() -> int:
+    return 1 + (len(TARGET_DIMENSIONS) - 1) * len(RESIZE_MODES)
+
+
+def total_variant_count_per_original() -> int:
+    return clean_variant_count_per_original() * (1 + len(stress_specs()))
+
+
 def create_metrics_reports(df: Any, paths: RunPaths, threshold: float) -> tuple[Any, Any, Any, Any]:
     overall = pd.DataFrame([{**{"group": "overall", "group_value": "all"}, **metrics_for_group(df, threshold)}])
 
     group_frames: list[Any] = []
     for group_name, group_cols in [
+        ("test_type", ["test_type"]),
         ("source", ["source"]),
         ("actual_label", ["actual_label"]),
         ("target_dimension", ["target_dimension"]),
         ("resize_mode", ["resize_mode"]),
+        ("stress_type", ["stress_type"]),
+        ("stress_type_level", ["stress_type", "stress_level"]),
         ("source_label", ["source", "actual_label"]),
+        ("source_test_type", ["source", "test_type"]),
         ("source_resolution", ["source", "target_dimension", "resize_mode"]),
+        ("source_stress", ["source", "stress_type", "stress_level"]),
         ("resolution_bucket", ["resolution_bucket"]),
         ("brightness_bucket", ["brightness_bucket"]),
         ("blur_bucket", ["blur_bucket"]),
@@ -1158,10 +1291,15 @@ def create_threshold_sweep(df: Any) -> Any:
 
     for threshold in thresholds:
         rows.append({**{"threshold": threshold, "group": "overall", "group_value": "all"}, **metrics_for_group(valid, threshold)})
+        for test_type, group in valid.groupby("test_type", dropna=False):
+            rows.append({**{"threshold": threshold, "group": "test_type", "group_value": test_type}, **metrics_for_group(group, threshold)})
         for source, group in valid.groupby("source", dropna=False):
             rows.append({**{"threshold": threshold, "group": "source", "group_value": source}, **metrics_for_group(group, threshold)})
         for target, group in valid.groupby("target_dimension", dropna=False):
             rows.append({**{"threshold": threshold, "group": "target_dimension", "group_value": target}, **metrics_for_group(group, threshold)})
+        stress_valid = valid[valid["test_type"].eq("stress")]
+        for stress_type, group in stress_valid.groupby("stress_type", dropna=False):
+            rows.append({**{"threshold": threshold, "group": "stress_type", "group_value": stress_type}, **metrics_for_group(group, threshold)})
 
     return pd.DataFrame(rows)
 
@@ -1228,7 +1366,7 @@ def write_summary(paths: RunPaths, spec: ModelSpec, df: Any, overall: Any, by_gr
             lines.append(f"{key:<18}: {value}")
 
     if not by_group.empty:
-        display_cols = [col for col in ["group", "source", "actual_label", "target_dimension", "resize_mode", "count", "TP", "TN", "FP", "FN", "accuracy", "F1", "FPR", "FNR"] if col in by_group.columns]
+        display_cols = [col for col in ["group", "source", "actual_label", "test_type", "stress_type", "stress_level", "target_dimension", "resize_mode", "count", "TP", "TN", "FP", "FN", "accuracy", "F1", "FPR", "FNR"] if col in by_group.columns]
         lines.extend(["", "Top grouped rows:", by_group[display_cols].head(30).to_string(index=False)])
 
     paths.summary_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1270,6 +1408,8 @@ def run_model(images: Any, spec: ModelSpec, args: argparse.Namespace) -> None:
     df = build_plan(images, spec, args.threshold, args.random_seed)
     save_checkpoint(df, paths)
     print(f"Planned variants: {len(df):,}")
+    print(f"  clean rows    : {int((df['test_type'] == 'clean').sum()):,}")
+    print(f"  stress rows   : {int((df['test_type'] == 'stress').sum()):,}")
 
     classifier = load_classifier(spec)
     df = run_inference(df, classifier, paths, args)
@@ -1313,8 +1453,12 @@ def main() -> None:
     print(f"Label counts       : {label_counts}")
 
     if args.plan_only:
-        variants_per_original = 1 + (len(TARGET_DIMENSIONS) - 1) * len(RESIZE_MODES)
+        clean_per_original = clean_variant_count_per_original()
+        stress_per_original = clean_per_original * len(stress_specs())
+        variants_per_original = clean_per_original + stress_per_original
         print("\nPlan only:")
+        print(f"Clean/original     : {clean_per_original}")
+        print(f"Stress/original    : {stress_per_original}")
         print(f"Variants/original  : {variants_per_original}")
         print(f"Variants/model     : {len(images) * variants_per_original:,}")
         print(f"Model output dirs  : {', '.join(str((args.output_root.expanduser().resolve() / s.acronym)) for s in specs)}")
