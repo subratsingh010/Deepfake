@@ -259,7 +259,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-clean-model-output",
         action="store_true",
-        help="Do not remove an existing output/<model_acronym>/ directory before running that model.",
+        help="Do not remove an existing output/<model_acronym>/ directory before running that model. By default, reruns overwrite that model directory.",
     )
     parser.add_argument(
         "--plan-only",
@@ -1224,6 +1224,7 @@ def run_model(images: Any, spec: ModelSpec, args: argparse.Namespace) -> None:
     print("=" * 80)
     print(f"Model      : {spec.model_name}")
     print(f"Output dir : {paths.output_dir}")
+    print(f"Overwrite  : {'no, keeping existing model output' if args.no_clean_model_output else 'yes, cleaning this model output before run'}")
 
     df = build_plan(images, spec, args.threshold, args.random_seed)
     save_checkpoint(df, paths)
