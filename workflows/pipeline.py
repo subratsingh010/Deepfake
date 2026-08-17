@@ -60,7 +60,7 @@ DEFAULT_OUTPUT_ROOT = Path.cwd() / "output"
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
-TARGET_DIMENSIONS: list[str | int] = ["original", 1024, 720, 512, 256]
+TARGET_DIMENSIONS: list[str | int] = ["original", 1024, 720, 512, 384, 256]
 RESIZE_MODES = ["aspect", "square"]
 JPEG_QUALITY_LEVELS = [95, 80, 60, 40]
 
@@ -254,7 +254,7 @@ COLUMN_DESCRIPTIONS = {
     "original_width": "Original source image width.",
     "original_height": "Original source image height.",
     "original_megapixels": "Original source image megapixels.",
-    "target_dimension": "original, 1024, 720, 512, or 256.",
+    "target_dimension": "original, 1024, 720, 512, 384, or 256.",
     "resize_mode": "blank for original, aspect for aspect-preserving resize, square for center-crop square resize.",
     "processing_variant": "Combined clean processing variant: original, 1024_aspect, 1024_square, 720_aspect, etc.",
     "stress_type": "Stress family for stress rows, for example blur, brightness, sharpness, contrast, or jpeg_compression. Blank for clean rows.",

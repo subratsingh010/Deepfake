@@ -4,7 +4,7 @@ from pathlib import Path
 BENCHMARK_CONFIG = {
     "data_root": Path("/Users/subrat/Desktop/Deepfake"),
     "output_root": Path.cwd() / "output",
-    "target_dimensions": ["original", 1024, 720, 512, 256],
+    "target_dimensions": ["original", 1024, 720, 512, 384, 256],
     "resize_modes": ["aspect", "square"],
     "jpeg_quality_levels": [95, 80, 60, 40],
     "checkpoint_every": 25,
